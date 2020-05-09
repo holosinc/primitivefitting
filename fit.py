@@ -1,9 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.optim
+import sklearn.cluster
+import matplotlib.pyplot as plt
+import draw
+import math
 
 point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\mesh_voxelized_res.txt"
-voxel_size = 0.025
+voxel_size = 0.0125
 
 with open(point_cloud_file, 'r') as f:
     point_strs = f.readlines()
@@ -20,7 +24,7 @@ maxes = torch.max(integer_points, dim=0).values
 
 original_size = (maxes - mins) + 1
 # Give some padding around the object by multiplying the size by 2
-size = 2 * original_size
+size = original_size + 10
 
 offset = -mins.unsqueeze(0) + (size - original_size) / 2
 
@@ -50,6 +54,11 @@ while len(voxels_to_visit) > 0:
             voxels_to_visit.append([visited[0], visited[1], visited[2] - 1])
 
 voxel_grid = flood_filled_grid
+
+fig = plt.figure()
+ax = fig.gca(projection='3d')
+
+draw.draw_voxels(ax, voxel_grid)
 
 # Now that we have a filled 3D object, convert the voxel grid back to point form for the rest of the algorithm
 
@@ -98,14 +107,18 @@ def invert_rotation(quaternion, points):
     inverse_rotation_matrix = invert_rotation_matrix(rotation_matrix)
     return inverse_rotation_matrix.unsqueeze(0).matmul(points.unsqueeze(2)).squeeze(2)
 
-def invert_position(position, points):
+def rotate(quaternion, points):
+    rotation_matrix = quaternion_to_rotation_matrix(quaternion)
+    return rotation_matrix.unsqueeze(0).matmul(points.unsqueeze(2)).squeeze(2)
+
+def translate(position, points):
+    return points + position.unsqueeze(0)
+
+def invert_translate(position, points):
     return points - position.unsqueeze(0)
 
-#def invert_scale(scale, points):
-    #return (1.0 / (0.01 + torch.abs(scale))).unsqueeze(0) * points
-
-#def invert_scale(scale, points):
-    #return scale.unsqueeze(0) * points
+def invert_scale(scale, points):
+    return scale.unsqueeze(0) * points
 
 def scale(scale_, points):
     return scale_.unsqueeze(0) * points
@@ -146,7 +159,10 @@ class PrimitiveModel(nn.Module):
 
     def forward(self, points):
         #return scale(self.inverse_scale, invert_rotation(self.rotation, invert_position(self.position, points)))
-        return scale(self.inverse_scale, invert_rotation(self.rotation, invert_position(self.position, points)))
+        return scale(self.inverse_scale, invert_rotation(self.rotation, invert_translate(self.position, points)))
+
+    def transform(self, points):
+        return translate(self.position, rotate(self.rotation, scale(self.get_scale(), points)))
 
     def normalize_rotation(self):
         n = torch.norm(self.rotation).item()
@@ -251,7 +267,7 @@ outside_points = voxels_to_indices(~voxel_grid).float()
 #model = CylinderModel(inside_points, 1.0)
 
 inside_points_multiplier = -1.0
-outside_points_multiplier = 3.0
+outside_points_multiplier = 6.0
 
 def map_range(x, x0, x1, y0, y1):
     return y0 + (x - x0) * ((y1 - y0) / (x1 - x0))
@@ -266,7 +282,7 @@ def optimize(model):
 
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
-        model.lambda_ = map_range(i, 0, num_steps - 1, 2.0, 8.0)
+        model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
 
         optimizer.zero_grad()
         loss = model(inside_points).sum() * inside_points_multiplier + model(
@@ -275,14 +291,14 @@ def optimize(model):
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
 
-        print("Pos", model.position, model.position.grad)
-        print("Rot", model.rotation, model.rotation.grad)
-        print("Sca", model.inverse_scale, model.inverse_scale.grad)
+        #print("Pos", model.position, model.position.grad)
+        #print("Rot", model.rotation, model.rotation.grad)
+        #print("Sca", model.inverse_scale, model.inverse_scale.grad)
 
         optimizer.step()
         model.normalize_rotation()
         #model.clamp_inverse_scale(2.0)
-        print("Loss:", loss)
+        #print("Loss:", loss)
 
         prev_loss = loss.item()
 
@@ -301,8 +317,24 @@ def argmin(lst, f):
 fitted_models = []
 
 lambda_ = 5.0
-for _ in range(1):
+for _ in range(4):
+    potential_models = []
+
+    """
+    number_means = 4
+    kmeans = sklearn.cluster.KMeans(n_clusters=number_means)
+    mean_indices = torch.tensor(kmeans.fit_predict(inside_points.numpy()), dtype=torch.long)
+    for mean_idx in range(number_means):
+        mean_inside_points = inside_points[mean_indices == mean_idx, :]
+        #potential_models.append(SphereModel(mean_inside_points, lambda_))
+        potential_models.append(BoxModel(mean_inside_points, lambda_))
+        #potential_models.append(CylinderModel(mean_inside_points, lambda_))
+
+    best_model = argmin(potential_models, optimize)
+    """
+
     #best_model = argmin([SphereModel(inside_points, lambda_), BoxModel(inside_points, lambda_), CylinderModel(inside_points, lambda_)], optimize)
+    #best_model = argmin(potential_models, optimize)
     #best_model = SphereModel(inside_points, lambda_)
 
     best_model = BoxModel(inside_points, lambda_)
@@ -313,10 +345,11 @@ for _ in range(1):
     points_exactly_inside = best_model.exact_forward(inside_points)
     points_exactly_outside = ~points_exactly_inside
 
+    print(best_model)
     print("Number of points exactly inside: " + str(points_exactly_inside.sum()))
     print("Number of points exactly outside: " + str(points_exactly_outside.sum()))
 
-    outside_points = torch.cat([outside_points, inside_points[points_exactly_inside, :]], dim=0)
+    #outside_points = torch.cat([outside_points, inside_points[points_exactly_inside, :]], dim=0)
     inside_points = inside_points[points_exactly_outside, :]
 
     #best_model.lambda_ = 0.25
@@ -335,3 +368,12 @@ for _ in range(1):
 print("Final models")
 for m in fitted_models:
     print(str(m))
+
+#ax.set_aspect("equal")
+
+for m in fitted_models:
+    if isinstance(m, BoxModel):
+        m.position.data += 0.5
+        draw.draw_cube(ax, m)
+
+plt.show()
