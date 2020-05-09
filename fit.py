@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 import torch.optim
 import sklearn.cluster
+import scipy.optimize
 import matplotlib.pyplot as plt
 import draw
 import math
+import numpy as np
 
 point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\mesh_voxelized_res.txt"
 voxel_size = 0.0125
@@ -314,24 +316,25 @@ def argmin(lst, f):
             min_elem = elem
     return min_elem
 
+"""
 fitted_models = []
 
 lambda_ = 5.0
 for _ in range(4):
     potential_models = []
 
-    """
-    number_means = 4
-    kmeans = sklearn.cluster.KMeans(n_clusters=number_means)
-    mean_indices = torch.tensor(kmeans.fit_predict(inside_points.numpy()), dtype=torch.long)
-    for mean_idx in range(number_means):
-        mean_inside_points = inside_points[mean_indices == mean_idx, :]
+
+    #number_means = 4
+    #kmeans = sklearn.cluster.KMeans(n_clusters=number_means)
+    #mean_indices = torch.tensor(kmeans.fit_predict(inside_points.numpy()), dtype=torch.long)
+    #for mean_idx in range(number_means):
+        #mean_inside_points = inside_points[mean_indices == mean_idx, :]
         #potential_models.append(SphereModel(mean_inside_points, lambda_))
-        potential_models.append(BoxModel(mean_inside_points, lambda_))
+        #potential_models.append(BoxModel(mean_inside_points, lambda_))
         #potential_models.append(CylinderModel(mean_inside_points, lambda_))
 
-    best_model = argmin(potential_models, optimize)
-    """
+    #best_model = argmin(potential_models, optimize)
+
 
     #best_model = argmin([SphereModel(inside_points, lambda_), BoxModel(inside_points, lambda_), CylinderModel(inside_points, lambda_)], optimize)
     #best_model = argmin(potential_models, optimize)
@@ -364,6 +367,38 @@ for _ in range(4):
 
     if inside_points.shape[0] == 0:
         break
+"""
+
+model = BoxModel(inside_points, 1.0)
+model.eval()
+
+def set_model(model, x):
+    model.position.data[0] = x[0]
+    model.position.data[1] = x[1]
+    model.position.data[2] = x[2]
+    model.rotation.data[0] = x[3]
+    model.rotation.data[1] = x[4]
+    model.rotation.data[2] = x[5]
+    model.rotation.data[3] = x[6]
+    model.inverse_scale.data[0] = x[7]
+    model.inverse_scale.data[1] = x[8]
+    model.inverse_scale.data[2] = x[9]
+
+def optimize_callback(x):
+    set_model(model, x)
+    loss = model(inside_points).sum() * inside_points_multiplier + model(
+        outside_points).sum() * outside_points_multiplier
+    print(loss)
+    return loss
+
+x0 = np.array([model.position.data[0].item(), model.position.data[1].item(), model.position.data[2].item(),
+               model.rotation.data[0].item(), model.rotation.data[1].item(), model.rotation.data[2].item(), model.rotation.data[3].item(),
+               model.inverse_scale.data[0].item(), model.inverse_scale.data[1].item(), model.inverse_scale.data[2].item()])
+
+ret = scipy.optimize.basinhopping(optimize_callback, x0, T=1.0)
+set_model(model, ret)
+
+fitted_models = [model]
 
 print("Final models")
 for m in fitted_models:
