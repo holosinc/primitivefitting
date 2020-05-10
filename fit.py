@@ -7,7 +7,7 @@ import draw
 import math
 
 point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\mesh_voxelized_res.txt"
-voxel_size = 0.0125
+voxel_size = 2.0
 
 with open(point_cloud_file, 'r') as f:
     point_strs = f.readlines()
@@ -88,19 +88,26 @@ identity_quaternion = torch.tensor([1.0, 0.0, 0.0, 0.0])
 identity_matrix = torch.eye(3)
 assert(torch.abs(identity_matrix - quaternion_to_rotation_matrix(identity_quaternion)).sum().item() == 0.0)
 
+# See https://stackoverflow.com/questions/51976461/optimal-way-of-defining-a-numerically-stable-sigmoid-function-for-a-list-in-pyth
+def numerically_stable_sigmoid(x):
+    pos_mask = x >= 0
+    neg_mask = ~pos_mask
+    z = torch.zeros_like(x)
+    z[pos_mask] = torch.exp(-x[pos_mask])
+    z[neg_mask] = torch.exp(x[neg_mask])
+    top = torch.ones_like(x)
+    top[neg_mask] = z[neg_mask]
+    return top / (1.0 + z)
+
 def invert_rotation_matrix(rot_matrix):
     # The inverse of a rotation matrix is merely the transpose
     return rot_matrix.t()
 
 def differentiable_leq_one(x, lambda_=1.0):
-    return 1.0 / (1.0 + torch.exp(lambda_ * (x - 1.0)))
-
-def differentiable_leq_one(x, lambda_=1.0):
-    return torch.sigmoid(-lambda_ * (x - 1.0))
+    return numerically_stable_sigmoid(lambda_ * (1.0 - x))
 
 def differentiable_geq_neg_one(x, lambda_=1.0):
-    #return 1.0 / (1.0 + torch.exp(lambda_ * (-x - 1.0)))
-    return torch.sigmoid(-lambda_ * (-x - 1.0))
+    return numerically_stable_sigmoid(lambda_ * (x + 1.0))
 
 def invert_rotation(quaternion, points):
     rotation_matrix = quaternion_to_rotation_matrix(quaternion)
@@ -125,6 +132,9 @@ def scale(scale_, points):
 
 def norm2(m, dim=0):
     return m.pow(2).sum(dim)
+
+def clamp01(x):
+    return numerically_stable_sigmoid(10.0 * (x - 0.5))
 
 class PrimitiveModel(nn.Module):
     def __init__(self, init_points, randomize=True):
@@ -158,7 +168,12 @@ class PrimitiveModel(nn.Module):
         return 1.0 / self.inverse_scale
 
     def forward(self, points):
-        #return scale(self.inverse_scale, invert_rotation(self.rotation, invert_position(self.position, points)))
+        # Assume that the voxels have a volume of 1
+        num_contained_voxels = self.count_containment(points)
+        jaccard_index = num_contained_voxels / self.volume()
+        return clamp01(jaccard_index)
+
+    def inverse_transform(self, points):
         return scale(self.inverse_scale, invert_rotation(self.rotation, invert_translate(self.position, points)))
 
     def transform(self, points):
@@ -180,6 +195,21 @@ class PrimitiveModel(nn.Module):
     def clamp_inverse_scale(self, value):
         self.inverse_scale.data = torch.clamp(self.inverse_scale.data, -value, value)
 
+    def volume(self):
+        raise NotImplementedError("Volume not implemented")
+
+    def count_containment(self, points):
+        return self.containment(points).sum()
+
+    def exact_containment(self, points):
+        raise NotImplementedError("Exact containment not implemented")
+
+    def containment(self, points):
+        raise NotImplementedError("Containment not implemented")
+
+    def abs_scale(self):
+        self.inverse_scale.data.abs_()
+
     def __str__(self):
         return "Position: " + str(self.position) + "\nRotation: " + str(self.rotation) + "\nScale: " + str(self.get_scale())
 
@@ -188,15 +218,19 @@ class SphereModel(PrimitiveModel):
         super().__init__(init_points)
         self.lambda_ = lambda_
 
-    def exact_forward(self, points):
-        transformed_points = super().forward(points)
+    def exact_containment(self, points):
+        transformed_points = self.inverse_transform(points)
         distance_from_origin = torch.norm(transformed_points, dim=1)
         return distance_from_origin <= 1.0
 
-    def forward(self, points):
-        transformed_points = super().forward(points)
+    def containment(self, points):
+        transformed_points = self.inverse_transform(points)
         distance_from_origin = torch.norm(transformed_points, dim=1)
         return differentiable_leq_one(distance_from_origin, lambda_=self.lambda_)
+
+    def volume(self):
+        scale = self.get_scale()
+        return 4.0 / 3.0 * math.pi * scale.prod()
 
     def __str__(self):
         return "Sphere Model\n" + super().__str__()
@@ -206,8 +240,8 @@ class BoxModel(PrimitiveModel):
         super().__init__(init_points)
         self.lambda_ = lambda_
 
-    def exact_forward(self, points):
-        transformed_points = super().forward(points)
+    def exact_containment(self, points):
+        transformed_points = self.inverse_transform(points)
         face1 = transformed_points[:, 0] <= 1.0
         face2 = transformed_points[:, 0] >= -1.0
         face3 = transformed_points[:, 1] <= 1.0
@@ -216,8 +250,8 @@ class BoxModel(PrimitiveModel):
         face6 = transformed_points[:, 2] >= -1.0
         return face1 & face2 & face3 & face4 & face5 & face6
 
-    def forward(self, points):
-        transformed_points = super().forward(points)
+    def containment(self, points):
+        transformed_points = self.inverse_transform(points)
         face1 = differentiable_leq_one(transformed_points[:, 0], lambda_=self.lambda_)
         face2 = differentiable_geq_neg_one(transformed_points[:, 0], lambda_=self.lambda_)
         face3 = differentiable_leq_one(transformed_points[:, 1], lambda_=self.lambda_)
@@ -227,6 +261,10 @@ class BoxModel(PrimitiveModel):
         #return (face1 * face2 * face3 * face4 * face5 * face6).pow(1.0 / 6.0)
         return face1 * face2 * face3 * face4 * face5 * face6
 
+    def volume(self):
+        scale = self.get_scale()
+        return 8.0 * scale.prod()
+
     def __str__(self):
         return "Box Model\n" + super().__str__()
 
@@ -235,8 +273,8 @@ class CylinderModel(PrimitiveModel):
         super().__init__(init_points)
         self.lambda_ = lambda_
 
-    def exact_forward(self, points):
-        transformed_points = super().forward(points)
+    def exact_containment(self, points):
+        transformed_points = self.inverse_transform(points)
         face_top = transformed_points[:, 1] <= 1.0
         face_bottom = transformed_points[:, 1] >= -1.0
         points_xz = points[:, [0, 2]]
@@ -244,11 +282,11 @@ class CylinderModel(PrimitiveModel):
         curved_side = distance_from_axis <= 1.0
         return face_top & face_bottom & curved_side
 
-    def forward(self, points):
-        transformed_points = super().forward(points)
+    def containment(self, points):
+        transformed_points = self.inverse_transform(points)
         face_top = differentiable_leq_one(transformed_points[:, 1], lambda_=self.lambda_)
         face_bottom = differentiable_geq_neg_one(transformed_points[:, 1], lambda_=self.lambda_)
-        points_xz = points[:, [0, 2]]
+        points_xz = transformed_points[:, [0, 2]]
         distance_from_axis = torch.norm(points_xz, dim=1)
         curved_side = differentiable_leq_one(distance_from_axis, lambda_=self.lambda_)
         #return (face_top * face_bottom * curved_side).pow(1.0 / 3.0)
@@ -256,6 +294,10 @@ class CylinderModel(PrimitiveModel):
 
     def __str__(self):
         return "Cylinder Model\n" + super().__str__()
+
+    def volume(self):
+        scale = self.get_scale()
+        return 2.0 * math.pi * scale.prod()
 
 torch.set_printoptions(profile="full")
 
@@ -266,43 +308,50 @@ outside_points = voxels_to_indices(~voxel_grid).float()
 #model = BoxModel(inside_points, 1.0)
 #model = CylinderModel(inside_points, 1.0)
 
-inside_points_multiplier = -1.0
-outside_points_multiplier = 6.0
-
 def map_range(x, x0, x1, y0, y1):
     return y0 + (x - x0) * ((y1 - y0) / (x1 - x0))
 
 def optimize(model):
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9)
     model.train()
 
     prev_loss = None
 
-    num_steps = 2000
+    num_steps = 250
 
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
         model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
 
         optimizer.zero_grad()
-        loss = model(inside_points).sum() * inside_points_multiplier + model(
-            outside_points).sum() * outside_points_multiplier
+
+        num_points = inside_points.shape[0]
+        vol = model.volume()
+        volume_bonus = numerically_stable_sigmoid((10.0 / num_points) * (vol - (num_points / 2.0)))
+
+        loss = -model(inside_points) - volume_bonus
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
 
-        #print("Pos", model.position, model.position.grad)
-        #print("Rot", model.rotation, model.rotation.grad)
-        #print("Sca", model.inverse_scale, model.inverse_scale.grad)
+        print("Pos", model.position, model.position.grad)
+        print("Rot", model.rotation, model.rotation.grad)
+        print("Sca", model.inverse_scale, model.inverse_scale.grad)
 
         optimizer.step()
         model.normalize_rotation()
-        #model.clamp_inverse_scale(2.0)
-        #print("Loss:", loss)
+        model.abs_scale()
+        print("Loss:", loss)
+
+        #if prev_loss is not None and abs(loss.item() - prev_loss) < 0.00001:
+            #prev_loss = loss.item()
+            #break
 
         prev_loss = loss.item()
 
-    return model.exact_forward(inside_points).sum() * inside_points_multiplier + model.exact_forward(outside_points).sum() * outside_points_multiplier
+    return prev_loss
+
+    #return model.exact_containment(inside_points).sum() * inside_points_multiplier + model.exact_containment(outside_points).sum() * outside_points_multiplier
 
 def argmin(lst, f):
     min_score = None
@@ -320,29 +369,29 @@ lambda_ = 5.0
 for _ in range(4):
     potential_models = []
 
-    """
-    number_means = 4
-    kmeans = sklearn.cluster.KMeans(n_clusters=number_means)
-    mean_indices = torch.tensor(kmeans.fit_predict(inside_points.numpy()), dtype=torch.long)
-    for mean_idx in range(number_means):
-        mean_inside_points = inside_points[mean_indices == mean_idx, :]
+    #number_means = 4
+    #kmeans = sklearn.cluster.KMeans(n_clusters=number_means)
+    #mean_indices = torch.tensor(kmeans.fit_predict(inside_points.numpy()), dtype=torch.long)
+    #for mean_idx in range(number_means):
+        #mean_inside_points = inside_points[mean_indices == mean_idx, :]
         #potential_models.append(SphereModel(mean_inside_points, lambda_))
-        potential_models.append(BoxModel(mean_inside_points, lambda_))
+        #potential_models.append(BoxModel(mean_inside_points, lambda_))
         #potential_models.append(CylinderModel(mean_inside_points, lambda_))
 
-    best_model = argmin(potential_models, optimize)
-    """
+    #best_model = argmin(potential_models, optimize)
 
-    #best_model = argmin([SphereModel(inside_points, lambda_), BoxModel(inside_points, lambda_), CylinderModel(inside_points, lambda_)], optimize)
+    best_model = argmin([SphereModel(inside_points, lambda_), BoxModel(inside_points, lambda_), CylinderModel(inside_points, lambda_)], optimize)
     #best_model = argmin(potential_models, optimize)
     #best_model = SphereModel(inside_points, lambda_)
 
-    best_model = BoxModel(inside_points, lambda_)
-    optimize(best_model)
+    #best_model = BoxModel(inside_points, lambda_)
+    #best_model = SphereModel(inside_points, lambda_)
+    #best_model = CylinderModel(inside_points, lambda_)
+    #optimize(best_model)
 
     fitted_models.append(best_model)
 
-    points_exactly_inside = best_model.exact_forward(inside_points)
+    points_exactly_inside = best_model.exact_containment(inside_points)
     points_exactly_outside = ~points_exactly_inside
 
     print(best_model)
@@ -375,5 +424,11 @@ for m in fitted_models:
     if isinstance(m, BoxModel):
         m.position.data += 0.5
         draw.draw_cube(ax, m)
+    elif isinstance(m, SphereModel):
+        m.position.data += 0.5
+        draw.draw_sphere(ax, m)
+    elif isinstance(m, CylinderModel):
+        m.position.data += 0.5
+        draw.draw_cylinder(ax, m)
 
 plt.show()
