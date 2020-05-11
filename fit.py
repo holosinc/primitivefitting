@@ -5,6 +5,7 @@ import sklearn.cluster
 import matplotlib.pyplot as plt
 import draw
 import math
+import voxel
 
 point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\mesh_voxelized_res.txt"
 voxel_size = 2.0
@@ -33,44 +34,15 @@ integer_points = integer_points + offset
 voxel_grid = torch.zeros(tuple(size), dtype=torch.bool)
 
 # Assign the point cloud to the new voxel grid
-voxel_grid[integer_points[:, 0], integer_points[:, 1], integer_points[:, 2]] = 1
+voxel.batch_set(voxel_grid, integer_points, True)
 
-# Flood fill from the outside
-# The result will be that any voxels not reachable from the inside will be set to 1 (filled)
-visited_grid = torch.zeros_like(voxel_grid, dtype=torch.bool)
-flood_filled_grid = torch.ones_like(voxel_grid, dtype=torch.bool)
-voxels_to_visit = [[0, 0, 0]]
-while len(voxels_to_visit) > 0:
-    visited = voxels_to_visit.pop()
-    if visited[0] >= 0 and visited[0] < size[0].item() and visited[1] >= 0 and visited[1] < size[1].item() and visited[2] >= 0 and visited[2] < size[2].item() and not visited_grid[visited[0], visited[1], visited[2]].item():
-        visited_grid[visited[0], visited[1], visited[2]] = True
-        if not voxel_grid[visited[0], visited[1], visited[2]].item():
-            flood_filled_grid[visited[0], visited[1], visited[2]] = False
-            voxels_to_visit.append([visited[0] + 1, visited[1], visited[2]])
-            voxels_to_visit.append([visited[0] - 1, visited[1], visited[2]])
-            voxels_to_visit.append([visited[0], visited[1] + 1, visited[2]])
-            voxels_to_visit.append([visited[0], visited[1] - 1, visited[2]])
-            voxels_to_visit.append([visited[0], visited[1], visited[2] + 1])
-            voxels_to_visit.append([visited[0], visited[1], visited[2] - 1])
-
-voxel_grid = flood_filled_grid
+voxel_grid = voxel.fill_holes(voxel_grid)
 
 fig = plt.figure()
 ax = fig.gca(projection='3d')
-
 draw.draw_voxels(ax, voxel_grid)
 
 # Now that we have a filled 3D object, convert the voxel grid back to point form for the rest of the algorithm
-
-# This function returns a n x 3 vector, where each row in the tensor is an index of a filled voxel position
-def voxels_to_indices(voxel_grid):
-    r1 = torch.arange(0, voxel_grid.shape[0]).unsqueeze(1).unsqueeze(2).expand_as(voxel_grid)
-    idx0 = torch.masked_select(r1, voxel_grid)
-    r2 = torch.arange(0, voxel_grid.shape[1]).unsqueeze(0).unsqueeze(2).expand_as(voxel_grid)
-    idx1 = torch.masked_select(r2, voxel_grid)
-    r3 = torch.arange(0, voxel_grid.shape[2]).unsqueeze(0).unsqueeze(1).expand_as(voxel_grid)
-    idx2 = torch.masked_select(r3, voxel_grid)
-    return torch.stack([idx0, idx1, idx2], dim=1)
 
 # From https://en.wikipedia.org/wiki/Quaternions_and_spatial_rotation#Quaternion-derived_rotation_matrix
 def quaternion_to_rotation_matrix(quaternion):
@@ -136,6 +108,9 @@ def norm2(m, dim=0):
 def clamp01(x):
     return numerically_stable_sigmoid(10.0 * (x - 0.5))
 
+def trough_curve(x, center, trough_size):
+    return torch.exp(-(((x - center) / trough_size).pow(4.0)))
+
 class PrimitiveModel(nn.Module):
     def __init__(self, init_points, randomize=True):
         super().__init__()
@@ -144,7 +119,8 @@ class PrimitiveModel(nn.Module):
         self.inverse_scale = nn.Parameter(torch.randn((3,)))
 
         inside_point_center = torch.mean(init_points, dim=0)
-        max_distance_from_center = torch.max(torch.norm(init_points - (inside_point_center.unsqueeze(0)), dim=1))
+        #max_distance_from_center = torch.max(torch.norm(init_points - (inside_point_center.unsqueeze(0)), dim=1))
+        max_distance_from_center = torch.max(torch.abs(init_points - (inside_point_center.unsqueeze(0))), dim=0).values
 
         self.position.data[0] = inside_point_center[0].item()
         self.position.data[1] = inside_point_center[1].item()
@@ -155,9 +131,9 @@ class PrimitiveModel(nn.Module):
         #self.inverse_scale.data[1] = 1.0 / avg_distance_from_center
         #self.inverse_scale.data[2] = 1.0 / avg_distance_from_center
 
-        self.inverse_scale.data[0] = 1.0 / max_distance_from_center
-        self.inverse_scale.data[1] = 1.0 / max_distance_from_center
-        self.inverse_scale.data[2] = 1.0 / max_distance_from_center
+        self.inverse_scale.data[0] = 1.0 / max_distance_from_center[0].item()
+        self.inverse_scale.data[1] = 1.0 / max_distance_from_center[1].item()
+        self.inverse_scale.data[2] = 1.0 / max_distance_from_center[2].item()
 
         self.rotation.data[0] = identity_quaternion[0].item()
         self.rotation.data[1] = identity_quaternion[1].item()
@@ -258,8 +234,8 @@ class BoxModel(PrimitiveModel):
         face4 = differentiable_geq_neg_one(transformed_points[:, 1], lambda_=self.lambda_)
         face5 = differentiable_leq_one(transformed_points[:, 2], lambda_=self.lambda_)
         face6 = differentiable_geq_neg_one(transformed_points[:, 2], lambda_=self.lambda_)
-        #return (face1 * face2 * face3 * face4 * face5 * face6).pow(1.0 / 6.0)
-        return face1 * face2 * face3 * face4 * face5 * face6
+        return (face1 * face2 * face3 * face4 * face5 * face6).pow(1.0 / 6.0)
+        #return face1 * face2 * face3 * face4 * face5 * face6
 
     def volume(self):
         scale = self.get_scale()
@@ -289,8 +265,8 @@ class CylinderModel(PrimitiveModel):
         points_xz = transformed_points[:, [0, 2]]
         distance_from_axis = torch.norm(points_xz, dim=1)
         curved_side = differentiable_leq_one(distance_from_axis, lambda_=self.lambda_)
-        #return (face_top * face_bottom * curved_side).pow(1.0 / 3.0)
-        return face_top * face_bottom * curved_side
+        return (face_top * face_bottom * curved_side).pow(1.0 / 3.0)
+        #return face_top * face_bottom * curved_side
 
     def __str__(self):
         return "Cylinder Model\n" + super().__str__()
@@ -301,23 +277,21 @@ class CylinderModel(PrimitiveModel):
 
 torch.set_printoptions(profile="full")
 
-inside_points = voxels_to_indices(voxel_grid).float()
-outside_points = voxels_to_indices(~voxel_grid).float()
-
-#model = SphereModel(inside_points, 0.1)
-#model = BoxModel(inside_points, 1.0)
-#model = CylinderModel(inside_points, 1.0)
+inside_points = voxel.voxels_to_indices(voxel_grid).float()
+outside_points = voxel.voxels_to_indices(~voxel_grid).float()
 
 def map_range(x, x0, x1, y0, y1):
     return y0 + (x - x0) * ((y1 - y0) / (x1 - x0))
 
 def optimize(model):
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     model.train()
 
     prev_loss = None
 
-    num_steps = 250
+    num_steps = 500
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.005))
 
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
@@ -327,27 +301,35 @@ def optimize(model):
 
         num_points = inside_points.shape[0]
         vol = model.volume()
-        volume_bonus = numerically_stable_sigmoid((10.0 / num_points) * (vol - (num_points / 2.0)))
+        #volume_bonus = numerically_stable_sigmoid((10.0 / num_points) * (vol - (num_points / 2.0)))
+        #volume_bonus = numerically_stable_sigmoid(10.0 * (vol - 2.0))
+        trough_low = 0.5 * num_points
+        trough_high = 1.5 * num_points
+        trough_center = (trough_low + trough_high) / 2.0
+        trough_size = trough_high - trough_low
+        volume_bonus = trough_curve(vol, trough_center, trough_size)
 
         loss = -model(inside_points) - volume_bonus
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
 
-        print("Pos", model.position, model.position.grad)
-        print("Rot", model.rotation, model.rotation.grad)
-        print("Sca", model.inverse_scale, model.inverse_scale.grad)
+        #print("Pos", model.position, model.position.grad)
+        #print("Rot", model.rotation, model.rotation.grad)
+        #print("Sca", model.inverse_scale, model.inverse_scale.grad)
 
         optimizer.step()
         model.normalize_rotation()
         model.abs_scale()
-        print("Loss:", loss)
+        #print("Loss:", loss)
 
         #if prev_loss is not None and abs(loss.item() - prev_loss) < 0.00001:
             #prev_loss = loss.item()
             #break
 
         prev_loss = loss.item()
+        scheduler.step()
+
 
     return prev_loss
 
@@ -380,14 +362,14 @@ for _ in range(4):
 
     #best_model = argmin(potential_models, optimize)
 
-    best_model = argmin([SphereModel(inside_points, lambda_), BoxModel(inside_points, lambda_), CylinderModel(inside_points, lambda_)], optimize)
+    #best_model = argmin([SphereModel(inside_points, lambda_), BoxModel(inside_points, lambda_), CylinderModel(inside_points, lambda_)], optimize)
     #best_model = argmin(potential_models, optimize)
     #best_model = SphereModel(inside_points, lambda_)
 
-    #best_model = BoxModel(inside_points, lambda_)
+    best_model = BoxModel(inside_points, lambda_)
     #best_model = SphereModel(inside_points, lambda_)
     #best_model = CylinderModel(inside_points, lambda_)
-    #optimize(best_model)
+    optimize(best_model)
 
     fitted_models.append(best_model)
 
