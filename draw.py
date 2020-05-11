@@ -48,5 +48,13 @@ def draw_cylinder(ax, model):
 
     ax.plot_wireframe(x3.numpy(), y3.numpy(), z3.numpy(), color="r")
 
-def draw_voxels(ax, voxels):
+def draw_voxels(ax, voxels, equalize_aspect_ratio=True):
     ax.voxels(filled=voxels.numpy())
+    if equalize_aspect_ratio:
+        half_upper_bound = max(voxels.shape[0], voxels.shape[1], voxels.shape[2]) / 2.0
+        center_x = voxels.shape[0] / 2.0
+        center_y = voxels.shape[1] / 2.0
+        center_z = voxels.shape[2] / 2.0
+        ax.set_xlim(center_x - half_upper_bound, center_y + half_upper_bound)
+        ax.set_ylim(center_y - half_upper_bound, center_y + half_upper_bound)
+        ax.set_zlim(center_z - half_upper_bound, center_z + half_upper_bound)

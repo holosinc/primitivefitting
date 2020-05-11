@@ -21,7 +21,7 @@ def connected_components(voxel_grid):
                 set(visited, voxel, True)
                 for neighbor in voxel_neighbors(voxel):
                     voxels_to_visit.append(neighbor)
-        return torch.tensor(ret, dtype=torch.LongTensor)
+        return torch.tensor(ret, dtype=torch.long)
 
     components = []
     for voxel in itertools.product(range(voxel_grid.shape[0]), range(voxel_grid.shape[1]), range(voxel_grid.shape[2])):
