@@ -79,6 +79,12 @@ class PrimitiveModel(nn.Module):
     def abs_scale(self):
         self.inverse_scale.data.abs_()
 
+    def max_scale(self, c):
+        c_recip = 1.0 / c
+        self.inverse_scale.data[0] = min(self.inverse_scale.data[0].item(), c_recip)
+        self.inverse_scale.data[1] = min(self.inverse_scale.data[0].item(), c_recip)
+        self.inverse_scale.data[2] = min(self.inverse_scale.data[0].item(), c_recip)
+
     def __str__(self):
         return "Position: " + str(self.position) + "\nRotation: " + str(self.rotation) + "\nScale: " + str(self.get_scale())
 
