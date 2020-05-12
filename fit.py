@@ -8,11 +8,11 @@ from models import SphereModel, BoxModel, CylinderModel
 from torchext import numerically_stable_sigmoid
 import math
 
-#point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\bunnyP00625.txt"
-#voxel_size = 0.00625
+point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\bunnyP00625.txt"
+voxel_size = 0.00625
 
-point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\monkeyP05.txt"
-voxel_size = 0.05
+#point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\monkeyP05.txt"
+#voxel_size = 0.05
 
 #point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\tram2P0.txt"
 #voxel_size = 2.0
@@ -62,19 +62,10 @@ class NumericalInstabilityException(Exception):
 
 def optimize(inside_points, model):
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.005))
     model.train()
 
-    prev_loss = None
-
     num_steps = 500
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.005))
-
-    num_points = inside_points.shape[0]
-
-    def volume_bonus(vol):
-        return numerically_stable_sigmoid((10.0 / num_points) * (vol - (num_points / 2.0)))
-
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
         model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
@@ -82,9 +73,8 @@ def optimize(inside_points, model):
         optimizer.zero_grad()
 
         jaccard_index = model(inside_points)
-        bonus = volume_bonus(model.volume())
 
-        loss = -jaccard_index - bonus
+        loss = -jaccard_index
 
         if math.isnan(loss.item()):
             raise NumericalInstabilityException("Loss score was NaN. Consider using torch.autograd.detect_anomaly() to track down the source of the NaN")
@@ -102,10 +92,8 @@ def optimize(inside_points, model):
         optimizer.step()
         model.normalize_rotation()
         model.abs_scale()
-        #model.max_scale(1.0)
 
         print("jaccard_index", jaccard_index)
-        print("bonus", bonus)
 
         if isinstance(model, BoxModel):
             print("Box loss:", loss)
@@ -114,16 +102,11 @@ def optimize(inside_points, model):
         elif isinstance(model, CylinderModel):
             print("Cylinder loss:", loss)
 
-        #if prev_loss is not None and abs(loss.item() - prev_loss) < 0.00001:
-            #prev_loss = loss.item()
-            #break
-
-        prev_loss = loss.item()
         scheduler.step()
 
     # Don't use the raw loss score since the different geometric models may have different incomparable loss scores
-    # (like comparing apples to oranges). Make a comparable loss score by using exact containment here
-    return -float(model.exact_containment(inside_points).sum().item()) / model.volume().item() - volume_bonus(model.volume()).item()
+    # (like comparing apples to oranges)
+    return -model.exact_forward(inside_points)
 
 fitted_models = []
 
@@ -140,9 +123,9 @@ while len(connected_components) > 0 and i < max_num_fitted_models:
     points = component.float()
 
     lambda_ = 1.0
-    best_model = argmin([SphereModel(points, lambda_), BoxModel(points, lambda_), CylinderModel(points, lambda_)], partial(optimize, points))
+    #best_model = argmin([SphereModel(points, lambda_), BoxModel(points, lambda_), CylinderModel(points, lambda_)], partial(optimize, points))
     #best_model = argmin([SphereModel(points, lambda_)], partial(optimize, points))
-    #best_model = argmin([BoxModel(points, lambda_)], partial(optimize, points))
+    best_model = argmin([BoxModel(points, lambda_)], partial(optimize, points))
     #best_model = argmin([CylinderModel(points, lambda_)], partial(optimize, points))
 
     """

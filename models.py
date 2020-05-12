@@ -39,8 +39,13 @@ class PrimitiveModel(nn.Module):
     def forward(self, points):
         # Assume that the voxels have a volume of 1
         num_contained_voxels = self.count_containment(points)
-        jaccard_index = num_contained_voxels / self.volume()
-        return clamp01(jaccard_index)
+        num_points = points.shape[0]
+        return num_contained_voxels / (self.volume() + float(num_points) - num_contained_voxels)
+
+    def exact_forward(self, points):
+        num_contained_voxels = self.count_exact_containment(points).item()
+        num_points = points.shape[0]
+        return num_contained_voxels / (self.volume().item() + float(num_points) - num_contained_voxels)
 
     def inverse_transform(self, points):
         return scale(self.inverse_scale, invert_rotation(self.rotation, invert_translate(self.position, points)))
@@ -72,6 +77,9 @@ class PrimitiveModel(nn.Module):
 
     def exact_containment(self, points):
         raise NotImplementedError("Exact containment not implemented")
+
+    def count_exact_containment(self, points):
+        return self.exact_containment(points).sum()
 
     def containment(self, points):
         raise NotImplementedError("Containment not implemented")
