@@ -11,11 +11,11 @@ import math
 #point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\bunnyP00625.txt"
 #voxel_size = 0.00625
 
-#point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\monkeyP05.txt"
-#voxel_size = 0.05
+point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\monkeyP05.txt"
+voxel_size = 0.05
 
-point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\tram2P0.txt"
-voxel_size = 2.0
+#point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\tram2P0.txt"
+#voxel_size = 2.0
 
 #point_cloud_file = "C:\\Users\\Caleb Helbling\\Documents\\holosproject\\voxelizervs\Debug\\dragonP05.txt"
 #voxel_size = 0.05
