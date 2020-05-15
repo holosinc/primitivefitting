@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import draw
 import voxel
 from utils import argmin, argmax, partial, map_range
-from models import SphereModel, BoxModel, CylinderModel
+from models import SphereModel, BoxModel, CylinderModel, LossType
 from torchext import numerically_stable_sigmoid
 import math
 
@@ -60,21 +60,19 @@ outside_points = voxel.voxels_to_indices(~voxel_grid).float()
 class NumericalInstabilityException(Exception):
    pass
 
-def optimize(inside_points, model):
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+def optimize(points, model, loss_type=LossType.BEST_EFFORT):
+    num_steps = 500
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.005))
     model.train()
 
-    num_steps = 500
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
         model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
 
         optimizer.zero_grad()
-
-        jaccard_index = model(inside_points)
-
-        loss = -jaccard_index
+        loss = model(points, loss_type=loss_type)
 
         if math.isnan(loss.item()):
             raise NumericalInstabilityException("Loss score was NaN. Consider using torch.autograd.detect_anomaly() to track down the source of the NaN")
@@ -93,8 +91,6 @@ def optimize(inside_points, model):
         model.normalize_rotation()
         model.abs_scale()
 
-        print("jaccard_index", jaccard_index)
-
         if isinstance(model, BoxModel):
             print("Box loss:", loss)
         elif isinstance(model, SphereModel):
@@ -106,7 +102,7 @@ def optimize(inside_points, model):
 
     # Don't use the raw loss score since the different geometric models may have different incomparable loss scores
     # (like comparing apples to oranges)
-    return -model.exact_forward(inside_points)
+    return model.exact_forward(points, loss_type=loss_type)
 
 fitted_models = []
 
@@ -123,9 +119,9 @@ while len(connected_components) > 0 and i < max_num_fitted_models:
     points = component.float()
 
     lambda_ = 1.0
-    #best_model = argmin([SphereModel(points, lambda_), BoxModel(points, lambda_), CylinderModel(points, lambda_)], partial(optimize, points))
+    best_model = argmin([SphereModel(points, lambda_), BoxModel(points, lambda_), CylinderModel(points, lambda_)], partial(optimize, points))
     #best_model = argmin([SphereModel(points, lambda_)], partial(optimize, points))
-    best_model = argmin([BoxModel(points, lambda_)], partial(optimize, points))
+    #best_model = argmin([BoxModel(points, lambda_)], partial(optimize, points))
     #best_model = argmin([CylinderModel(points, lambda_)], partial(optimize, points))
 
     """

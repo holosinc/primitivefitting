@@ -1,8 +1,13 @@
+from enum import Enum
 import torch
 import torch.nn as nn
 import math
-from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one
+from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one, numerically_stable_sigmoid
 from three_d import identity_quaternion, scale, invert_rotation, translate, invert_translate, rotate
+
+class LossType(Enum):
+    BEST_EFFORT = 0
+    BEST_MATCH = 1
 
 class PrimitiveModel(nn.Module):
     def __init__(self, init_points, randomize=True):
@@ -36,16 +41,30 @@ class PrimitiveModel(nn.Module):
     def get_scale(self):
         return 1.0 / self.inverse_scale
 
-    def forward(self, points):
+    def compute_loss(self, points, exact=False, loss_type=LossType.BEST_EFFORT):
         # Assume that the voxels have a volume of 1
-        num_contained_voxels = self.count_containment(points)
-        num_points = points.shape[0]
-        return num_contained_voxels / (self.volume() + float(num_points) - num_contained_voxels)
+        if exact:
+            num_contained_voxels = self.count_exact_containment(points).detach()
+        else:
+            num_contained_voxels = self.count_containment(points)
+        volume = self.volume()
+        if exact:
+            volume = volume.detach()
+        num_points = float(points.shape[0])
+        if loss_type == LossType.BEST_EFFORT:
+            best_effort_index = num_contained_voxels / volume
+            best_effort_score = clamp01(best_effort_index)
+            volume_bonus = numerically_stable_sigmoid((10.0 / num_points) * (volume - num_points / 2.0))
+            return -(best_effort_score + volume_bonus)
+        elif loss_type == LossType.BEST_MATCH:
+            jaccard_index = num_contained_voxels / (volume + num_points - num_contained_voxels)
+            return -jaccard_index
 
-    def exact_forward(self, points):
-        num_contained_voxels = self.count_exact_containment(points).item()
-        num_points = points.shape[0]
-        return num_contained_voxels / (self.volume().item() + float(num_points) - num_contained_voxels)
+    def forward(self, points, loss_type=LossType.BEST_EFFORT):
+        return self.compute_loss(points, exact=False, loss_type=loss_type)
+
+    def exact_forward(self, points, loss_type=LossType.BEST_EFFORT):
+        return float(self.compute_loss(points, exact=True, loss_type=loss_type))
 
     def inverse_transform(self, points):
         return scale(self.inverse_scale, invert_rotation(self.rotation, invert_translate(self.position, points)))
