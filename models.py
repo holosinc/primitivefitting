@@ -4,6 +4,7 @@ import torch.nn as nn
 import math
 from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one, numerically_stable_sigmoid
 from three_d import identity_quaternion, scale, invert_rotation, translate, invert_translate, rotate
+import draw
 
 class LossType(Enum):
     BEST_EFFORT = 0
@@ -115,6 +116,9 @@ class PrimitiveModel(nn.Module):
     def __str__(self):
         return "Position: " + str(self.position) + "\nRotation: " + str(self.rotation) + "\nScale: " + str(self.get_scale())
 
+    def draw(self, ax):
+        raise NotImplementedError("Draw not implemented")
+
 class SphereModel(PrimitiveModel):
     def __init__(self, init_points, lambda_):
         super().__init__(init_points)
@@ -136,6 +140,13 @@ class SphereModel(PrimitiveModel):
 
     def __str__(self):
         return "Sphere Model\n" + super().__str__()
+
+    def draw(self, ax):
+        # Move over 0.5 since integer coordinates in the model represent center of voxels,
+        # but when drawing integer coordinates are voxel corners
+        self.position.data += 0.5
+        draw.draw_sphere(ax, self)
+        self.position.data -= 0.5
 
 class BoxModel(PrimitiveModel):
     def __init__(self, init_points, lambda_):
@@ -170,6 +181,11 @@ class BoxModel(PrimitiveModel):
     def __str__(self):
         return "Box Model\n" + super().__str__()
 
+    def draw(self, ax):
+        self.position.data += 0.5
+        draw.draw_cube(ax, self)
+        self.position.data -= 0.5
+
 class CylinderModel(PrimitiveModel):
     def __init__(self, init_points, lambda_):
         super().__init__(init_points)
@@ -200,3 +216,8 @@ class CylinderModel(PrimitiveModel):
     def volume(self):
         scale = self.get_scale()
         return 2.0 * math.pi * scale.prod()
+
+    def draw(self, ax):
+        self.position.data += 0.5
+        draw.draw_cylinder(ax, ax)
+        self.position.data -= 0.5
