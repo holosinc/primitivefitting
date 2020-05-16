@@ -72,16 +72,17 @@ def points_to_voxel_grid(points, voxel_size):
 
     return (voxel_grid, offset)
 
-def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False, visualize_intermediate=False):
+def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False, visualize_intermediate=False, loss_type=LossType.BEST_EFFORT):
     (voxel_grid, offset) = points_to_voxel_grid(points, voxel_size)
     models = fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_spheres=use_spheres,
-                            use_boxes=use_boxes, use_cylinders=use_cylinders, visualize_intermediate=visualize_intermediate)
+                            use_boxes=use_boxes, use_cylinders=use_cylinders, visualize_intermediate=visualize_intermediate,
+                            loss_type=loss_type)
     for model in models:
         model.position.data -= offset
         model.inverse_scale.data /= voxel_size
     return models
 
-def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False, visualize_intermediate=False):
+def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False, visualize_intermediate=False, loss_type=LossType.BEST_EFFORT):
     fitted_models = []
 
     voxels_remaining = voxel_grid.clone()
@@ -105,7 +106,7 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
         if use_cylinders:
             potential_models.append(CylinderModel(component_points, lambda_))
 
-        best_model = argmin(potential_models, partial(optimize, component_points))
+        best_model = argmin(potential_models, partial(optimize, component_points, loss_type=loss_type))
 
         if visualize_intermediate:
             fig = plt.figure()
