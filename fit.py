@@ -11,10 +11,10 @@ class NumericalInstabilityException(Exception):
    pass
 
 def optimize(points, model, loss_type=LossType.BEST_EFFORT):
-    num_steps = 500
+    num_steps = 100
 
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.005))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.05))
     model.train()
 
     #with torch.autograd.detect_anomaly():

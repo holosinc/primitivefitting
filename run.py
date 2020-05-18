@@ -141,6 +141,15 @@ for m in fitted_models:
     m.draw(ax)
 plt.show()
 
+print("Visualizing result without voxels")
+
+fig = plt.figure()
+ax = fig.gca(projection='3d')
+draw.equalize_aspect_ratio(ax, voxel_grid)
+for m in fitted_models:
+    m.draw(ax)
+plt.show()
+
 print("Final models")
 for (i, m) in enumerate(fitted_models):
     fit.restore_point_coordinates(m, offset, voxel_size)

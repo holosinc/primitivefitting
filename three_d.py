@@ -13,8 +13,6 @@ def quaternion_to_rotation_matrix(quaternion):
     return torch.stack([row1, row2, row3])
 
 identity_quaternion = torch.tensor([1.0, 0.0, 0.0, 0.0])
-identity_matrix = torch.eye(3)
-assert(torch.abs(identity_matrix - quaternion_to_rotation_matrix(identity_quaternion)).sum().item() == 0.0)
 
 def invert_rotation_matrix(rot_matrix):
     # The inverse of a rotation matrix is merely the transpose
