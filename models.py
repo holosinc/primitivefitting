@@ -11,7 +11,7 @@ class LossType(Enum):
     BEST_MATCH = 1
 
 class PrimitiveModel(nn.Module):
-    def __init__(self, init_points, randomize=True):
+    def __init__(self, init_points):
         super().__init__()
         self.position = nn.Parameter(torch.randn((3,)))
         self.rotation = nn.Parameter(torch.randn((4,)))
@@ -38,6 +38,12 @@ class PrimitiveModel(nn.Module):
         self.rotation.data[1] = identity_quaternion[1].item()
         self.rotation.data[2] = identity_quaternion[2].item()
         self.rotation.data[3] = identity_quaternion[3].item()
+
+    def get_device(self):
+        if self.position.is_cuda:
+            return self.position.get_device()
+        else:
+            return None
 
     def get_scale(self):
         return 1.0 / self.inverse_scale

@@ -68,13 +68,21 @@ use_cylinders = use_prompt("cylinders")
 
 loss_type = None
 while loss_type is None:
-    val = input("What loss type would you like to use? (Input a number)\n0. Best effort\n1. Best match\n")
+    val = input("What loss type would you like to use? (Input a number) (Recommended is best match)\n0. Best effort\n1. Best match\n")
     if val == "0":
         loss_type = LossType.BEST_EFFORT
     elif val == "1":
         loss_type = LossType.BEST_MATCH
     else:
         print("Invalid value entered")
+
+fuzzy_containment = None
+while fuzzy_containment is None:
+    val = input("Would you like to use fuzzy containment? (y/n) Fuzzy containment will reduce the number of primitives needed to fit the model. (Recommended is y)\n")
+    if val == "y" or val == "yes":
+        fuzzy_containment = True
+    else:
+        fuzzy_containment = False
 
 visualize_intermediate = None
 while visualize_intermediate is None:
@@ -85,6 +93,20 @@ while visualize_intermediate is None:
         visualize_intermediate = False
     else:
         print("Invalid value entered")
+
+if torch.cuda.is_available():
+    use_cuda = None
+    while use_cuda is None:
+        val = input("Would you like to use CUDA to run the computation? (y/n)\n")
+        if val == "y" or val == "yes":
+            use_cuda = True
+        elif val == "n" or val == "no":
+            use_cuda = False
+        else:
+            print("Invalid value entered")
+else:
+    print("CUDA is not available on this machine, automatically disabling CUDA")
+    use_cuda = False
 
 print("Reading point file")
 
@@ -98,18 +120,17 @@ point_strs = [line for line in point_strs if line != ""]
 points = torch.tensor([list(map(float, line.split())) for line in point_strs])
 
 print("Points processed. Converting points to voxel grid")
-(voxel_grid, _) = fit.points_to_voxel_grid(points, voxel_size)
+(voxel_grid, offset) = fit.points_to_voxel_grid(points, voxel_size)
+if use_cuda:
+    offset = offset.cuda()
 print("Voxel grid created. Fitting primitives to voxel grid")
 fitted_models = fit.fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_boxes=use_boxes, use_spheres=use_spheres,
-                                   use_cylinders=use_cylinders, loss_type=loss_type, visualize_intermediate=visualize_intermediate)
+                                   use_cylinders=use_cylinders, loss_type=loss_type, visualize_intermediate=visualize_intermediate,
+                                   use_fuzzy_containment=fuzzy_containment, use_cuda=use_cuda)
 
 print("Primitive fitting complete")
 
 torch.set_printoptions(profile="full")
-
-print("Final models")
-for m in fitted_models:
-    print(str(m))
 
 print("Visualizing result")
 
@@ -119,3 +140,9 @@ draw.draw_voxels(ax, voxel_grid)
 for m in fitted_models:
     m.draw(ax)
 plt.show()
+
+print("Final models")
+for (i, m) in enumerate(fitted_models):
+    fit.restore_point_coordinates(m, offset, voxel_size)
+    print("Model " + str(i) + ":")
+    print(str(m))

@@ -60,8 +60,8 @@ def points_to_voxel_grid(points, voxel_size):
     maxes = torch.max(integer_points, dim=0).values
     size = (maxes - mins) + 1
 
-    offset = -mins.unsqueeze(0)
-    integer_points = integer_points + offset
+    offset = -mins
+    integer_points = integer_points + offset.unsqueeze(0)
 
     voxel_grid = torch.zeros(tuple(size), dtype=torch.bool)
 
@@ -72,17 +72,28 @@ def points_to_voxel_grid(points, voxel_size):
 
     return (voxel_grid, offset)
 
-def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False, visualize_intermediate=False, loss_type=LossType.BEST_EFFORT):
+def restore_point_coordinates(model, offset, voxel_size):
+    model.position.data -= offset
+    model.position.data *= voxel_size
+    model.inverse_scale.data /= voxel_size
+
+def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
+               visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_fuzzy_containment=True, use_cuda=False,
+               cuda_device=None):
     (voxel_grid, offset) = points_to_voxel_grid(points, voxel_size)
+    if use_cuda:
+        offset = offset.cuda(device=cuda_device)
     models = fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_spheres=use_spheres,
                             use_boxes=use_boxes, use_cylinders=use_cylinders, visualize_intermediate=visualize_intermediate,
-                            loss_type=loss_type)
+                            loss_type=loss_type, use_fuzzy_containment=use_fuzzy_containment, use_cuda=use_cuda,
+                            cuda_device=cuda_device)
     for model in models:
-        model.position.data -= offset
-        model.inverse_scale.data /= voxel_size
+        restore_point_coordinates(model, offset, voxel_size)
     return models
 
-def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False, visualize_intermediate=False, loss_type=LossType.BEST_EFFORT):
+def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
+                   visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_fuzzy_containment=True,
+                   use_cuda=False, cuda_device=None):
     fitted_models = []
 
     voxels_remaining = voxel_grid.clone()
@@ -95,6 +106,8 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
         component = argmax(connected_components, lambda component: component.shape[0])
 
         component_points = component.float()
+        if use_cuda:
+            component_points = component_points.cuda(device=cuda_device)
 
         lambda_ = 1.0
 
@@ -106,6 +119,10 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
         if use_cylinders:
             potential_models.append(CylinderModel(component_points, lambda_))
 
+        if use_cuda:
+            for model in potential_models:
+                model.cuda(device=cuda_device)
+
         best_model = argmin(potential_models, partial(optimize, component_points, loss_type=loss_type))
 
         if visualize_intermediate:
@@ -116,8 +133,9 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
             plt.show()
 
         points_inside_mask = best_model.exact_containment(component_points)
-        best_model.lambda_ = 10.0
-        points_inside_mask |= (best_model.containment(component_points) >= 0.5)
+        if use_fuzzy_containment:
+            best_model.lambda_ = 10.0
+            points_inside_mask |= (best_model.containment(component_points) >= 0.5)
         points_outside_mask = ~points_inside_mask
 
         #print(best_model)
