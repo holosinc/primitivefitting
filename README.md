@@ -28,3 +28,4 @@ Use the program to output a text document of points, and take note of the resolu
 ![Fitted bunny](images/bunny.png?raw=true)
 ![Fitted monkey](images/monkey.png?raw=true)
 ![Fitted tram](images/tram.png?raw=true)
+![Fitted hornet](images/hornet.png?raw=true)

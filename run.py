@@ -8,7 +8,7 @@ import os.path
 point_cloud_file = None
 voxel_size = None
 while point_cloud_file is None:
-    val = input("Which model would you like to fit primitives to? (Input a number)\n0. Deer\n1. Bunny\n2. Monkey \n3. Tram\n4. Dragon\n5. Custom\n")
+    val = input("Which model would you like to fit primitives to? (Input a number)\n0. Deer\n1. Bunny\n2. Monkey \n3. Tram\n4. Dragon\n5. Hornet\n6. Custom\n")
     if val == "0":
         point_cloud_file = "examples/deerP25.txt"
         voxel_size = 0.25
@@ -25,6 +25,9 @@ while point_cloud_file is None:
         point_cloud_file = "examples/dragonP05.txt"
         voxel_size = 0.05
     elif val == "5":
+        point_cloud_file = "examples/hornet2P0.txt"
+        voxel_size = 2.0
+    elif val == "6":
         while point_cloud_file is None:
             point_cloud_file = input("Enter the path to the point text file\n")
             if os.path.isfile(point_cloud_file):
