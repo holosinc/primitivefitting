@@ -124,6 +124,9 @@ points = torch.tensor([list(map(float, line.split())) for line in point_strs])
 
 print("Points processed. Converting points to voxel grid")
 (voxel_grid, offset) = fit.points_to_voxel_grid(points, voxel_size)
+
+print("Voxel grid size: " + str(voxel_grid.shape))
+
 if use_cuda:
     offset = offset.cuda()
 print("Voxel grid created. Fitting primitives to voxel grid")
