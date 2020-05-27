@@ -1,4 +1,4 @@
-# Primitive Fitting by Gradient Descent
+# Primitive Fitting by Minimizing Volumetric Loss
 
 ![Fitted deer](images/deer.png?raw=true)
 
