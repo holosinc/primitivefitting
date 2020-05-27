@@ -23,6 +23,10 @@ To use a custom .obj file model, download and build the following C++ voxelizer 
 
 Use the program to output a text document of points, and take note of the resolution parameter (voxel size) that you pass to to the program. When running run.py, you will be prompted to enter the model that you would like to fit. Choose "Custom", insert the path to the text document of points, and input the resolution (voxel size) you used.
 
+## License
+
+This project is distributed under the MIT License except for the deer, monkey, and tram models which are under the CC-BY License. These models were created by Google Poly.
+
 ## Images
 
 ![Fitted bunny](images/bunny.png?raw=true)
