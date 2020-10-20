@@ -6,12 +6,21 @@ import voxel
 from utils import argmin, argmax, partial, map_range
 from models import SphereModel, BoxModel, CylinderModel, LossType
 import math
+from PSOptimizer import ParticleSwarmOptimizer
 
 class NumericalInstabilityException(Exception):
    pass
 
 def optimize(points, model, loss_type=LossType.BEST_EFFORT):
-    num_steps = 250
+    num_steps = 500
+
+    ps_optimizer = ParticleSwarmOptimizer(30, model.state_dict(), model.ranges, lambda: model(points, loss_type=loss_type))
+    for i in range(50):
+        ps_optimizer.step()
+        print("PS step " + str(i) + ": " + str(ps_optimizer.best_swarm_value))
+
+    print("Best swarm position blitted")
+    ps_optimizer.blit_best_swarm_position()
 
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.05))
@@ -23,6 +32,8 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
 
         optimizer.zero_grad()
         loss = model(points, loss_type=loss_type)
+        print("Loss: " + str(loss))
+        print("Fuzzy loss: " + str(model.fuzzy_forward(points, loss_type=loss_type)))
 
         if math.isnan(loss.item()):
             raise NumericalInstabilityException("Loss score was NaN. Consider using torch.autograd.detect_anomaly() to track down the source of the NaN")
@@ -52,7 +63,7 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
 
     # Don't use the raw loss score since the different geometric models may have different incomparable loss scores
     # (like comparing apples to oranges)
-    return model.exact_forward(points, loss_type=loss_type)
+    return model.fuzzy_forward(points, loss_type=loss_type)
 
 def points_to_voxel_grid(points, voxel_size):
     integer_points = torch.round(points / voxel_size).long()
@@ -132,11 +143,8 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
             best_model.draw(ax)
             plt.show()
 
-        points_inside_mask = best_model.exact_containment(component_points)
-        if use_fuzzy_containment:
-            best_model.lambda_ = 10.0
-            points_inside_mask |= (best_model.containment(component_points) >= 0.5)
-        points_outside_mask = ~points_inside_mask
+        points_inside_mask = best_model.fuzzy_containment(component_points)
+        #points_outside_mask = ~points_inside_mask
 
         #print(best_model)
         #print("Number of points exactly inside: " + str(points_inside_mask.sum()))

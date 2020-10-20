@@ -10,6 +10,11 @@ class LossType(Enum):
     BEST_EFFORT = 0
     BEST_MATCH = 1
 
+class ContainmentType(Enum):
+    DEFAULT = 0
+    EXACT = 1
+    FUZZY = 2
+
 class PrimitiveModel(nn.Module):
     def __init__(self, init_points):
         super().__init__()
@@ -33,6 +38,12 @@ class PrimitiveModel(nn.Module):
         self.rotation.data[2] = identity_quaternion[2].item()
         self.rotation.data[3] = identity_quaternion[3].item()
 
+        self.ranges = {
+            "position": (torch.min(init_points, dim=0).values, torch.max(init_points, dim=0).values),
+            "rotation": (torch.tensor([-1.0, -1.0, -1.0, -1.0]), torch.tensor([1.0, 1.0, 1.0, 1.0])),
+            "inverse_scale": (self.inverse_scale.clone(), torch.tensor([2.0, 2.0, 2.0]))
+        }
+
     def get_device(self):
         if self.position.is_cuda:
             return self.position.get_device()
@@ -42,14 +53,18 @@ class PrimitiveModel(nn.Module):
     def get_scale(self):
         return 1.0 / self.inverse_scale
 
-    def compute_loss(self, points, exact=False, loss_type=LossType.BEST_EFFORT):
+    def compute_loss(self, points, containment_type=ContainmentType.DEFAULT, loss_type=LossType.BEST_EFFORT):
         # Assume that the voxels have a volume of 1
-        if exact:
-            num_contained_voxels = self.count_exact_containment(points).detach()
-        else:
+        if containment_type == ContainmentType.DEFAULT:
             num_contained_voxels = self.count_containment(points)
+        elif containment_type == ContainmentType.EXACT:
+            num_contained_voxels = self.count_exact_containment(points).detach()
+        elif containment_type == ContainmentType.FUZZY:
+            num_contained_voxels = self.count_fuzzy_containment(points).detach()
+        else:
+            raise NotImplementedError("Containment type not implemented")
         volume = self.volume()
-        if exact:
+        if containment_type != ContainmentType.DEFAULT:
             volume = volume.detach()
         num_points = float(points.shape[0])
         if loss_type == LossType.BEST_EFFORT:
@@ -62,10 +77,13 @@ class PrimitiveModel(nn.Module):
             return -jaccard_index
 
     def forward(self, points, loss_type=LossType.BEST_EFFORT):
-        return self.compute_loss(points, exact=False, loss_type=loss_type)
+        return self.compute_loss(points, containment_type=ContainmentType.DEFAULT, loss_type=loss_type)
 
     def exact_forward(self, points, loss_type=LossType.BEST_EFFORT):
-        return float(self.compute_loss(points, exact=True, loss_type=loss_type))
+        return float(self.compute_loss(points, containment_type=ContainmentType.EXACT, loss_type=loss_type))
+
+    def fuzzy_forward(self, points, loss_type=LossType.BEST_EFFORT):
+        return float(self.compute_loss(points, containment_type=ContainmentType.FUZZY, loss_type=loss_type))
 
     def inverse_transform(self, points):
         return scale(self.inverse_scale, invert_rotation(self.rotation, invert_translate(self.position, points)))
@@ -94,6 +112,17 @@ class PrimitiveModel(nn.Module):
 
     def exact_containment(self, points):
         raise NotImplementedError("Exact containment not implemented")
+
+    def fuzzy_containment(self, points, lambda_=10.0, threshold=0.5):
+        points_inside_mask = self.exact_containment(points)
+        prev_lambda = self.lambda_
+        self.lambda_ = lambda_
+        points_inside_mask |= (self.containment(points) >= threshold)
+        self.lambda_ = prev_lambda
+        return points_inside_mask
+
+    def count_fuzzy_containment(self, points, lambda_=10.0, threshold=0.5):
+        return self.fuzzy_containment(points, lambda_=lambda_, threshold=threshold).sum()
 
     def count_exact_containment(self, points):
         return self.exact_containment(points).sum()
@@ -162,7 +191,7 @@ class BoxModel(PrimitiveModel):
         face4 = differentiable_geq_neg_one(transformed_points[:, 1], lambda_=self.lambda_)
         face5 = differentiable_leq_one(transformed_points[:, 2], lambda_=self.lambda_)
         face6 = differentiable_geq_neg_one(transformed_points[:, 2], lambda_=self.lambda_)
-        return (face1 * face2 * face3 * face4 * face5 * face6).pow(1.0 / 6.0)
+        return (face1 * face2 * face3 * face4 * face5 * face6 + 0.00001).pow(1.0 / 6.0)
 
     def volume(self):
         scale = self.get_scale()
@@ -185,7 +214,7 @@ class CylinderModel(PrimitiveModel):
         transformed_points = self.inverse_transform(points)
         face_top = transformed_points[:, 1] <= 1.0
         face_bottom = transformed_points[:, 1] >= -1.0
-        points_xz = points[:, [0, 2]]
+        points_xz = transformed_points[:, [0, 2]]
         distance_from_axis = torch.norm(points_xz, dim=1)
         curved_side = distance_from_axis <= 1.0
         return face_top & face_bottom & curved_side
@@ -197,7 +226,8 @@ class CylinderModel(PrimitiveModel):
         points_xz = transformed_points[:, [0, 2]]
         distance_from_axis = torch.norm(points_xz, dim=1)
         curved_side = differentiable_leq_one(distance_from_axis, lambda_=self.lambda_)
-        return (face_top * face_bottom * curved_side).pow(1.0 / 3.0)
+        return (face_top * face_bottom * curved_side + 0.00001).pow(1.0 / 3.0)
+        #return torch.min(torch.min(face_top, face_bottom), curved_side)
 
     def __str__(self):
         return "Cylinder Model\n" + super().__str__()
