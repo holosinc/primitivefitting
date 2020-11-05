@@ -17,6 +17,12 @@ def differentiable_leq_one(x, lambda_=1.0):
 def differentiable_geq_neg_one(x, lambda_=1.0):
     return numerically_stable_sigmoid(lambda_ * (x + 1.0))
 
+def differentiable_leq_c(x, c, lambda_=1.0):
+    return numerically_stable_sigmoid(lambda_ * (c - x))
+
+def differentiable_geq_c(x, c, lambda_=1.0):
+    return numerically_stable_sigmoid(lambda_ * (x - c))
+
 def norm2(m, dim=0):
     return m.pow(2).sum(dim)
 

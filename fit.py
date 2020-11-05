@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import draw
 import voxel
 from utils import argmin, argmax, partial, map_range
-from models import SphereModel, BoxModel, CylinderModel, LossType
+from models import EllipsoidModel, BoxModel, CylinderModel, LossType, SphereModel, AxisAlignedCuboid, Cuboid
 import math
 from PSOptimizer import ParticleSwarmOptimizer
 
@@ -14,6 +14,7 @@ class NumericalInstabilityException(Exception):
 def optimize(points, model, loss_type=LossType.BEST_EFFORT):
     num_steps = 500
 
+    """
     ps_optimizer = ParticleSwarmOptimizer(30, model.state_dict(), model.ranges, lambda: model(points, loss_type=loss_type))
     for i in range(50):
         ps_optimizer.step()
@@ -21,16 +22,27 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
 
     print("Best swarm position blitted")
     ps_optimizer.blit_best_swarm_position()
+    """
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.05))
+    #optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+
+    optimizers = [torch.optim.SGD(optimizer_param.params, lr=0.1, momentum=0.9) for optimizer_param in model.optimizer_config]
+    schedulers = [(lambda x: torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, x.start_lr, x.end_lr)))(optimizer_param)
+                  for (optimizer, optimizer_param) in zip(optimizers, model.optimizer_config)]
+
+    #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.05))
+    #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 20.0, 10.0))
     model.train()
 
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
-        model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
+        #model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
+        model.lambda_ = map_range(i, 0, num_steps - 1, 0.01, 8.0)
 
-        optimizer.zero_grad()
+        #optimizer.zero_grad()
+        for optimizer in optimizers:
+            optimizer.zero_grad()
+
         loss = model(points, loss_type=loss_type)
         print("Loss: " + str(loss))
         print("Fuzzy loss: " + str(model.fuzzy_forward(points, loss_type=loss_type)))
@@ -42,15 +54,17 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
 
         # Occasionally the gradient can blow up, so clip it here to make
         # sure we don't jump too far around the parameter space
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
 
         #print("Pos", model.position, model.position.grad)
         #print("Rot", model.rotation, model.rotation.grad)
         #print("Inv Sca", model.inverse_scale, model.inverse_scale.grad)
 
-        optimizer.step()
-        model.normalize_rotation()
-        model.abs_scale()
+        #optimizer.step()
+        for optimizer in optimizers:
+            optimizer.step()
+
+        model.normalize()
 
         #if isinstance(model, BoxModel):
             #print("Box loss:", loss)
@@ -59,7 +73,10 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
         #elif isinstance(model, CylinderModel):
             #print("Cylinder loss:", loss)
 
-        scheduler.step()
+        #scheduler.step()
+
+        for scheduler in schedulers:
+            scheduler.step()
 
     # Don't use the raw loss score since the different geometric models may have different incomparable loss scores
     # (like comparing apples to oranges)
@@ -124,9 +141,12 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
 
         potential_models = []
         if use_spheres:
+            #potential_models.append(EllipsoidModel(component_points, lambda_))
             potential_models.append(SphereModel(component_points, lambda_))
         if use_boxes:
-            potential_models.append(BoxModel(component_points, lambda_))
+            #potential_models.append(BoxModel(component_points, lambda_))
+            #potential_models.append(AxisAlignedCuboid(component_points, lambda_))
+            potential_models.append(Cuboid(component_points, lambda_))
         if use_cylinders:
             potential_models.append(CylinderModel(component_points, lambda_))
 
