@@ -63,3 +63,7 @@ def draw_voxels(ax, voxels, eq_aspect_ratio=True):
     ax.voxels(filled=voxels.numpy())
     if eq_aspect_ratio:
         equalize_aspect_ratio(ax, voxels)
+
+def draw_line(ax, pa, pb, color="r"):
+    points = np.stack([pa, pb]).transpose()
+    ax.plot3D(points[0], points[1], points[2], color=color)

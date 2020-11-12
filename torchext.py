@@ -31,3 +31,26 @@ def clamp01(x):
 
 def trough_curve(x, center, trough_size):
     return torch.exp(-(((x - center) / trough_size).pow(4.0)))
+
+def inverse_softplus(x):
+    ret = torch.log(torch.exp(x) - 1.0)
+    over_twenty = x > 20
+    ret[over_twenty] = x[over_twenty]
+    return ret
+
+def get_device(x):
+    if x.is_cuda:
+        return x.get_device()
+    else:
+        return None
+
+def perpendicular_vector(v):
+    if v[1].item() == 0 and v[2].item() == 0:
+        if v[0].item() == 0:
+            raise ValueError('zero vector')
+        else:
+            return torch.cross(v, torch.tensor([0.0, 1.0, 0.0], device=get_device(v)))
+    return torch.cross(v, torch.tensor([1.0, 0.0, 0.0], device=get_device(v)))
+
+def normalize(v):
+    return v / torch.norm(v, 2)

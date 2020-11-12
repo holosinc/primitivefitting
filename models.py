@@ -2,10 +2,13 @@ from enum import Enum
 import torch
 import torch.nn as nn
 import math
-from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one, numerically_stable_sigmoid, differentiable_leq_c, differentiable_geq_c
+import torchext
+from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one, numerically_stable_sigmoid,\
+    differentiable_leq_c, differentiable_geq_c, inverse_softplus, get_device, perpendicular_vector
 from three_d import identity_quaternion, scale, invert_rotation, translate, invert_translate, rotate
 import draw
 import numpy as np
+from sklearn.cluster import KMeans
 
 class LossType(Enum):
     BEST_EFFORT = 0
@@ -91,29 +94,232 @@ class OptimizerPreference:
         self.end_lr = end_lr
         self.params = params
 
-class Cuboid(PrimitiveModel):
+class CapsuleModel(PrimitiveModel):
     def __init__(self, init_points, lambda_):
-        super(Cuboid, self).__init__(lambda_)
+        super(CapsuleModel, self).__init__(lambda_)
+
+        self.p1 = nn.Parameter(torch.randn(3))
+        self.p2 = nn.Parameter(torch.randn(3))
+        self.radius_param = nn.Parameter(torch.randn(1))
+
+        kmeans = KMeans(n_clusters=2).fit(init_points.numpy())
+        cluster_a = torch.tensor(kmeans.cluster_centers_[0])
+        cluster_b = torch.tensor(kmeans.cluster_centers_[1])
+
+        n_hat = torchext.normalize(cluster_b - cluster_a)
+        v = init_points - cluster_a.unsqueeze(0)
+        v_projected = v @ n_hat
+        v_horizontal = v - (v_projected.unsqueeze(1) * n_hat.unsqueeze(0))
+        horizontal_dist = torch.norm(v_horizontal, 2, dim=1)
+
+        mean_horizontal_dist = torch.mean(horizontal_dist)
+
+        self.p1.data[0] = cluster_a[0].item()
+        self.p1.data[1] = cluster_a[1].item()
+        self.p1.data[2] = cluster_a[2].item()
+
+        self.p2.data[0] = cluster_b[0].item()
+        self.p2.data[1] = cluster_b[1].item()
+        self.p2.data[2] = cluster_b[2].item()
+
+        self.radius_param.data[0] = self.inverse_radius(mean_horizontal_dist).item()
+
+        #inside_point_center = torch.mean(init_points, dim=0)
+
+        #self.p1.data[0] = inside_point_center[0].item() - 1.0
+        #self.p1.data[1] = inside_point_center[1].item()
+        #self.p1.data[2] = inside_point_center[2].item()
+
+        #self.p2.data[0] = inside_point_center[0].item() + 1.0
+        #self.p2.data[1] = inside_point_center[1].item()
+        #self.p2.data[2] = inside_point_center[2].item()
+
+        #self.radius_param.data[0] = self.inverse_radius(torch.tensor(1.0)).item()
+
+        self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.p1, self.p2]),
+                                 OptimizerPreference(5.0, 2.0, [self.radius_param])]
+
+    def radius(self):
+        return torch.nn.functional.softplus(self.radius_param) + 0.5
+
+    def inverse_radius(self, r):
+        return inverse_softplus(r - 0.5)
+
+    def containment(self, points):
+        n = self.p2 - self.p1
+        h = torch.norm(n, 2)
+        if h.item() == 0.0:
+            n_hat = n
+        else:
+            n_hat = n / h
+
+        v = points - self.p1.unsqueeze(0)
+        w = points - self.p2.unsqueeze(0)
+
+        # Project each point onto the central line segment of the capsule to determine if
+        # the point lies between the top and bottom cylinder caps
+        v_projected = v @ n_hat
+
+        bottom = differentiable_geq_c(v_projected, 0.0, lambda_=self.lambda_)
+        top = differentiable_leq_c(v_projected, h, lambda_=self.lambda_)
+
+        # Subtract off the component of v in the direction of the central line segment to determine
+        # how far the point is from the central line horizontally
+        v_horizontal = v - (v_projected.unsqueeze(1) * n_hat.unsqueeze(0))
+        horizontal_dist = torch.norm(v_horizontal, 2, dim=1)
+        radius = self.radius()
+        # Is the point within radius distance from the center?
+        side = differentiable_leq_c(horizontal_dist, radius, lambda_=self.lambda_)
+
+        # Now test if the point is within the bottom sphere
+        bottom_sphere = differentiable_leq_c(torch.norm(v, 2, dim=1), radius, lambda_=self.lambda_)
+        top_sphere = differentiable_leq_c(torch.norm(w, 2, dim=1), radius, lambda_=self.lambda_)
+
+        cylinder = top * bottom * side
+
+        # A simple application of De Morgan's law, that is NOT ((NOT X) AND (NOT Y) AND (NOT Z)) == X OR Y OR Z
+        capsule = 1.0 - ((1.0 - cylinder) * (1.0 - bottom_sphere) * (1.0 - top_sphere))
+
+        return capsule
+
+    def exact_containment(self, points):
+        n = self.p2 - self.p1
+        h = torch.norm(n, 2)
+        if h.item() == 0.0:
+            n_hat = n
+        else:
+            n_hat = n / h
+
+        v = points - self.p1.unsqueeze(0)
+        w = points - self.p2.unsqueeze(0)
+
+        # Project each point onto the central line segment of the capsule to determine if
+        # the point lies between the top and bottom cylinder caps
+        v_projected = v @ n_hat
+
+        bottom = v_projected >= 0.0
+        top = v_projected <= h
+
+        # Subtract off the component of v in the direction of the central line segment to determine
+        # how far the point is from the central line horizontally
+        v_horizontal = v - (v_projected.unsqueeze(1) * n_hat.unsqueeze(0))
+        horizontal_dist = torch.norm(v_horizontal, 2, dim=1)
+        radius = self.radius()
+        # Is the point within radius distance from the center?
+        side = horizontal_dist <= radius
+
+        # Now test if the point is within the bottom sphere
+        bottom_sphere = torch.norm(v, 2, dim=1) <= radius
+        top_sphere = torch.norm(w, 2, dim=1) <= radius
+
+        cylinder = top & bottom & side
+
+        capsule = bottom_sphere | top_sphere | cylinder
+
+        return capsule
+
+    def volume(self):
+        h = torch.norm(self.p2 - self.p1, 2)
+        radius = self.radius()
+
+        capsule_volume = h * math.pi * radius ** 2
+        sphere_volume = (4.0 / 3.0) * math.pi * radius ** 3
+
+        return capsule_volume + sphere_volume
+
+    def draw(self, ax):
+        radius = self.radius().item()
+
+        u, v = np.mgrid[0:2 * np.pi:20j, 0:np.pi:10j]
+        x = np.cos(u) * np.sin(v)
+        y = np.sin(u) * np.sin(v)
+        z = np.cos(v)
+
+        x = x * radius
+        y = y * radius
+        z = z * radius
+
+        ax.plot_wireframe(x + self.p1.data[0].item(), y + self.p1.data[1].item(), z + self.p1.data[2].item(), color="g")
+        ax.plot_wireframe(x + self.p2.data[0].item(), y + self.p2.data[1].item(), z + self.p2.data[2].item(), color="g")
+
+        n = self.p2 - self.p1
+        h = torch.norm(n, 2)
+        if h.item() > 0.0:
+            n_hat = n / h
+
+            q = torchext.normalize(perpendicular_vector(n_hat))
+            s = torchext.normalize(torch.cross(n_hat, q))
+
+            p1 = self.p1.detach().numpy()
+            p2 = self.p2.detach().numpy()
+
+            q = (q * radius).detach().numpy()
+            s = (s * radius).detach().numpy()
+
+            for theta in np.mgrid[0:2 * np.pi:20j]:
+                offset = np.sin(theta) * q + np.cos(theta) * s
+                draw.draw_line(ax, p1 + offset, p2 + offset, color="g")
+
+
+            """
+            draw.draw_line(ax, (self.p1 + q).detach().numpy(), (self.p2 + q).detach().numpy())
+            draw.draw_line(ax, (self.p1 - q).detach().numpy(), (self.p2 - q).detach().numpy())
+            draw.draw_line(ax, (self.p1 + s).detach().numpy(), (self.p2 + s).detach().numpy())
+            draw.draw_line(ax, (self.p1 - s).detach().numpy(), (self.p2 - s).detach().numpy())
+            """
+
+class CuboidModel(PrimitiveModel):
+    def __init__(self, init_points, lambda_):
+        super(CuboidModel, self).__init__(lambda_)
         # This models has 13 parameters, which is 4 more than the minimum for the cuboid
         # This is done out of the hope that the extra parameters will assist in keeping the cuboid
         # from getting stuck in local minima
-        self.min_corner = nn.Parameter(torch.randn(3))
-        self.max_corner = nn.Parameter(torch.randn(3))
+        self.min_corner_param = nn.Parameter(torch.randn(3))
+        self.max_corner_param = nn.Parameter(torch.randn(3))
         self.position = nn.Parameter(torch.randn(3))
         self.rotation = nn.Parameter(torch.randn(4))
 
         inside_point_center = torch.mean(init_points, dim=0)
+        min_corner_0 = torch.mean(init_points[init_points[:, 0] <= inside_point_center[0]])
+        min_corner_1 = torch.mean(init_points[init_points[:, 1] <= inside_point_center[1]])
+        min_corner_2 = torch.mean(init_points[init_points[:, 2] <= inside_point_center[2]])
+        min_delta = torch.tensor([min_corner_0, min_corner_1, min_corner_2]) - inside_point_center
+        min_delta = torch.min(min_delta, torch.tensor([-0.3, -0.3, -0.3]))
+        min_corner = self.inverse_min_corner(min_delta)
+
+        max_corner_0 = torch.mean(init_points[init_points[:, 0] > inside_point_center[0]])
+        max_corner_1 = torch.mean(init_points[init_points[:, 1] > inside_point_center[1]])
+        max_corner_2 = torch.mean(init_points[init_points[:, 2] > inside_point_center[2]])
+        max_delta = torch.tensor([max_corner_0, max_corner_1, max_corner_2]) - inside_point_center
+        max_delta = torch.max(max_delta, torch.tensor([0.3, 0.3, 0.3]))
+        max_corner = self.inverse_max_corner(max_delta)
+
+        self.min_corner_param.data[0] = min_corner[0].item()
+        self.min_corner_param.data[1] = min_corner[1].item()
+        self.min_corner_param.data[2] = min_corner[2].item()
+
+        self.max_corner_param.data[0] = max_corner[0].item()
+        self.max_corner_param.data[1] = max_corner[1].item()
+        self.max_corner_param.data[2] = max_corner[2].item()
+
+        """
         delta = init_points - inside_point_center.unsqueeze(0)
         min_distance_from_center = torch.min(delta, dim=0).values
         max_distance_from_center = torch.max(delta, dim=0).values
 
-        self.min_corner.data[0] = min_distance_from_center[0].item()
-        self.min_corner.data[1] = min_distance_from_center[1].item()
-        self.min_corner.data[2] = min_distance_from_center[2].item()
+        min_distance_from_center = torch.min(min_distance_from_center, torch.tensor([-0.3, -0.3, -0.3]))
+        min_distance_from_center_remapped = self.inverse_min_corner(min_distance_from_center)
+        max_distance_from_center = torch.max(max_distance_from_center, torch.tensor([0.3, 0.3, 0.3]))
+        max_distance_from_center_remapped = self.inverse_max_corner(max_distance_from_center)
 
-        self.max_corner.data[0] = max_distance_from_center[0].item()
-        self.max_corner.data[1] = max_distance_from_center[1].item()
-        self.max_corner.data[2] = max_distance_from_center[2].item()
+        self.min_corner_param.data[0] = min_distance_from_center_remapped[0].item()
+        self.min_corner_param.data[1] = min_distance_from_center_remapped[1].item()
+        self.min_corner_param.data[2] = min_distance_from_center_remapped[2].item()
+
+        self.max_corner_param.data[0] = max_distance_from_center_remapped[0].item()
+        self.max_corner_param.data[1] = max_distance_from_center_remapped[1].item()
+        self.max_corner_param.data[2] = max_distance_from_center_remapped[2].item()
+        """
 
         self.position.data[0] = inside_point_center[0].item()
         self.position.data[1] = inside_point_center[1].item()
@@ -124,14 +330,14 @@ class Cuboid(PrimitiveModel):
         self.rotation.data[2] = identity_quaternion[2].item()
         self.rotation.data[3] = identity_quaternion[3].item()
 
-        self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.min_corner, self.max_corner, self.position]),
+        self.optimizer_config = [OptimizerPreference(15.0, 10.0, [self.min_corner_param, self.max_corner_param, self.position]),
                                  OptimizerPreference(0.05, 0.01, [self.rotation])]
 
         # TODO: Ranges
 
     def containment(self, points):
-        min_corner = torch.min(self.min_corner, self.max_corner)
-        max_corner = torch.max(self.min_corner, self.max_corner)
+        min_corner = self.min_corner()
+        max_corner = self.max_corner()
         transformed_points = invert_rotation(self.rotation, invert_translate(self.position, points))
 
         face1 = differentiable_leq_c(transformed_points[:, 0], max_corner[0], lambda_=self.lambda_)
@@ -143,9 +349,21 @@ class Cuboid(PrimitiveModel):
         # return (face1 * face2 * face3 * face4 * face5 * face6 + 0.00001).pow(1.0 / 6.0)
         return face1 * face2 * face3 * face4 * face5 * face6
 
+    def inverse_min_corner(self, x):
+        return inverse_softplus(-x - 0.25)
+
+    def inverse_max_corner(self, x):
+        return inverse_softplus(x - 0.25)
+
+    def min_corner(self):
+        return -(torch.nn.functional.softplus(self.min_corner_param) + 0.25)
+
+    def max_corner(self):
+        return torch.nn.functional.softplus(self.max_corner_param) + 0.25
+
     def exact_containment(self, points):
-        min_corner = torch.min(self.min_corner, self.max_corner)
-        max_corner = torch.max(self.min_corner, self.max_corner)
+        min_corner = self.min_corner()
+        max_corner = self.max_corner()
         transformed_points = invert_rotation(self.rotation, invert_translate(self.position, points))
 
         face1 = transformed_points[:, 0] <= max_corner[0]
@@ -158,11 +376,11 @@ class Cuboid(PrimitiveModel):
         return face1 & face2 & face3 & face4 & face5 & face6
 
     def volume(self):
-        return torch.abs(self.max_corner - self.min_corner).prod()
+        return torch.abs(self.max_corner() - self.min_corner()).prod()
 
     def draw(self, ax):
-        min_corner = torch.min(self.min_corner, self.max_corner)
-        max_corner = torch.max(self.min_corner, self.max_corner)
+        min_corner = self.min_corner()
+        max_corner = self.max_corner()
 
         # Square 1
         p1 = min_corner
@@ -187,40 +405,25 @@ class Cuboid(PrimitiveModel):
         p7 = points[6]
         p8 = points[7]
 
-        def draw_line(pa, pb):
-            points = np.stack([pa, pb]).transpose()
-            ax.plot3D(points[0], points[1], points[2], color="r")
-
         # Draw square 1
-        draw_line(p1, p2)
-        draw_line(p2, p3)
-        draw_line(p3, p4)
-        draw_line(p4, p1)
+        draw.draw_line(ax, p1, p2)
+        draw.draw_line(ax, p2, p3)
+        draw.draw_line(ax, p3, p4)
+        draw.draw_line(ax, p4, p1)
 
         # Draw square 2
-        draw_line(p5, p6)
-        draw_line(p6, p7)
-        draw_line(p7, p8)
-        draw_line(p8, p5)
+        draw.draw_line(ax, p5, p6)
+        draw.draw_line(ax, p6, p7)
+        draw.draw_line(ax, p7, p8)
+        draw.draw_line(ax, p8, p5)
 
         # Draw lines connecting the squares
-        draw_line(p1, p5)
-        draw_line(p2, p6)
-        draw_line(p3, p7)
-        draw_line(p4, p8)
+        draw.draw_line(ax, p1, p5)
+        draw.draw_line(ax, p2, p6)
+        draw.draw_line(ax, p3, p7)
+        draw.draw_line(ax, p4, p8)
 
     def normalize(self):
-        min_corner = torch.min(self.min_corner, self.max_corner)
-        max_corner = torch.max(self.min_corner, self.max_corner)
-
-        self.min_corner.data[0] = min_corner[0].item()
-        self.min_corner.data[1] = min_corner[1].item()
-        self.min_corner.data[2] = min_corner[2].item()
-
-        self.max_corner.data[0] = max_corner[0].item()
-        self.max_corner.data[1] = max_corner[1].item()
-        self.max_corner.data[2] = max_corner[2].item()
-
         n = torch.norm(self.rotation).item()
         if n == 0.0:
             self.rotation.data[0] = identity_quaternion[0].item()
@@ -260,6 +463,8 @@ class AxisAlignedCuboid(PrimitiveModel):
         self.rotation.data[2] = identity_quaternion[2].item()
         self.rotation.data[3] = identity_quaternion[3].item()
 
+        self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.min_corner, self.max_corner])]
+
         pos_range = (torch.min(init_points, dim=0).values, torch.max(init_points, dim=0).values)
         self.ranges = {
             "min_corner": pos_range,
@@ -295,10 +500,7 @@ class AxisAlignedCuboid(PrimitiveModel):
         return torch.abs(self.max_corner - self.min_corner).prod()
 
     def get_device(self):
-        if self.min_corner.is_cuda:
-            return self.min_corner.get_device()
-        else:
-            return None
+        return get_device(self.min_corner)
 
     def draw(self, ax):
         min_corner = torch.min(self.min_corner, self.max_corner)
@@ -316,27 +518,23 @@ class AxisAlignedCuboid(PrimitiveModel):
         p7 = max_corner
         p8 = np.array([min_corner[0], max_corner[1], max_corner[2]])
 
-        def draw_line(pa, pb):
-            points = np.stack([pa, pb]).transpose()
-            ax.plot3D(points[0], points[1], points[2], color="r")
-
         # Draw square 1
-        draw_line(p1, p2)
-        draw_line(p2, p3)
-        draw_line(p3, p4)
-        draw_line(p4, p1)
+        draw.draw_line(ax, p1, p2)
+        draw.draw_line(ax, p2, p3)
+        draw.draw_line(ax, p3, p4)
+        draw.draw_line(ax, p4, p1)
 
         # Draw square 2
-        draw_line(p5, p6)
-        draw_line(p6, p7)
-        draw_line(p7, p8)
-        draw_line(p8, p5)
+        draw.draw_line(ax, p5, p6)
+        draw.draw_line(ax, p6, p7)
+        draw.draw_line(ax, p7, p8)
+        draw.draw_line(ax, p8, p5)
 
         # Draw lines connecting the squares
-        draw_line(p1, p5)
-        draw_line(p2, p6)
-        draw_line(p3, p7)
-        draw_line(p4, p8)
+        draw.draw_line(ax, p1, p5)
+        draw.draw_line(ax, p2, p6)
+        draw.draw_line(ax, p3, p7)
+        draw.draw_line(ax, p4, p8)
 
     def normalize(self):
         min_corner = torch.min(self.min_corner, self.max_corner)
@@ -364,6 +562,8 @@ class SphereModel(PrimitiveModel):
         self.position.data[2] = inside_point_center[2].item()
 
         self.radius.data[0] = max_distance_from_center.item()
+
+        self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.position]), OptimizerPreference(7.0, 3.0, [self.radius])]
 
         self.ranges = {
             "position": (torch.min(init_points, dim=0).values, torch.max(init_points, dim=0).values),
@@ -409,7 +609,7 @@ class SphereModel(PrimitiveModel):
         y3 = transformed_points[1].view(y.shape)
         z3 = transformed_points[2].view(z.shape)
 
-        ax.plot_wireframe(x3.cpu().numpy(), y3.cpu().numpy(), z3.cpu().numpy(), color="r")
+        ax.plot_wireframe(x3.cpu().numpy(), y3.cpu().numpy(), z3.cpu().numpy(), color="b")
 
 # Unit primitive models are rescaled to unit coordinates before checking containment
 # this may be problematic when used in conjunction with the sigmoid function because

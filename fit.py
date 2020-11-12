@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import draw
 import voxel
 from utils import argmin, argmax, partial, map_range
-from models import EllipsoidModel, BoxModel, CylinderModel, LossType, SphereModel, AxisAlignedCuboid, Cuboid
+from models import EllipsoidModel, BoxModel, CylinderModel, LossType, SphereModel, AxisAlignedCuboid, CuboidModel, CapsuleModel
 import math
 from PSOptimizer import ParticleSwarmOptimizer
 
@@ -45,7 +45,7 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
 
         loss = model(points, loss_type=loss_type)
         print("Loss: " + str(loss))
-        print("Fuzzy loss: " + str(model.fuzzy_forward(points, loss_type=loss_type)))
+        #print("Fuzzy loss: " + str(model.fuzzy_forward(points, loss_type=loss_type)))
 
         if math.isnan(loss.item()):
             raise NumericalInstabilityException("Loss score was NaN. Consider using torch.autograd.detect_anomaly() to track down the source of the NaN")
@@ -146,9 +146,10 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
         if use_boxes:
             #potential_models.append(BoxModel(component_points, lambda_))
             #potential_models.append(AxisAlignedCuboid(component_points, lambda_))
-            potential_models.append(Cuboid(component_points, lambda_))
+            potential_models.append(CuboidModel(component_points, lambda_))
         if use_cylinders:
-            potential_models.append(CylinderModel(component_points, lambda_))
+            #potential_models.append(CylinderModel(component_points, lambda_))
+            potential_models.append(CapsuleModel(component_points, lambda_))
 
         if use_cuda:
             for model in potential_models:
