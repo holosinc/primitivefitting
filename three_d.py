@@ -14,6 +14,38 @@ def quaternion_to_rotation_matrix(quaternion):
 
 identity_quaternion = torch.tensor([1.0, 0.0, 0.0, 0.0])
 
+
+def rotation_matrix_to_quaternion(a):
+    trace = a[0,0] + a[1,1] + a[2,2]
+    if trace.item() > 0:
+        s = 0.5 / torch.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (a[2,1] - a[1,2]) * s
+        y = (a[0,2] - a[2,0]) * s
+        z = (a[1,0] - a[0,1]) * s
+    else:
+        if a[0,0] > a[1,1] and a[0,0] > a[2,2]:
+            s = 2.0 * torch.sqrt(1.0 + a[0,0] - a[1,1] - a[2,2])
+            w = (a[2,1] - a[1,2]) / s
+            x = 0.25 * s
+            y = (a[0,1] + a[1,0]) / s
+            z = (a[0,2] + a[2,0]) / s
+        elif a[1,1] > a[2,2]:
+            s = 2.0 * torch.sqrt(1.0 + a[1,1] - a[0,0] - a[2,2])
+            w = (a[0,2] - a[2,0]) / s
+            x = (a[0,1] + a[1,0]) / s
+            y = 0.25 * s
+            z = (a[1,2] + a[2,1]) / s
+        else:
+            s = 2.0 * torch.sqrt(1.0 + a[2,2] - a[0,0] - a[1,1])
+            w = (a[1,0] - a[0,1]) / s
+            x = (a[0,2] + a[2,0]) / s
+            y = (a[1,2] + a[2,1]) / s
+            z = 0.25 * s
+    return torch.tensor([w, x, y, z])
+
+
+
 def invert_rotation_matrix(rot_matrix):
     # The inverse of a rotation matrix is merely the transpose
     return rot_matrix.t()

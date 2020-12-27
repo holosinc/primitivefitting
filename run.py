@@ -160,4 +160,4 @@ print("Final models")
 for (i, m) in enumerate(fitted_models):
     fit.restore_point_coordinates(m, offset, voxel_size)
     print("Model " + str(i) + ":")
-    print(str(m))
+    print(str(m.to_unity_collider()))

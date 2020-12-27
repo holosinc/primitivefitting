@@ -101,9 +101,8 @@ def points_to_voxel_grid(points, voxel_size):
     return (voxel_grid, offset)
 
 def restore_point_coordinates(model, offset, voxel_size):
-    model.position.data -= offset
-    model.position.data *= voxel_size
-    model.inverse_scale.data /= voxel_size
+    model.translate(-offset)
+    model.uniform_scale(voxel_size)
 
 def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
                visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_fuzzy_containment=True, use_cuda=False,

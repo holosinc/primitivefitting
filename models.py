@@ -5,10 +5,11 @@ import math
 import torchext
 from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one, numerically_stable_sigmoid,\
     differentiable_leq_c, differentiable_geq_c, inverse_softplus, get_device, perpendicular_vector
-from three_d import identity_quaternion, scale, invert_rotation, translate, invert_translate, rotate
+from three_d import identity_quaternion, scale, invert_rotation, translate, invert_translate, rotate, rotation_matrix_to_quaternion
 import draw
 import numpy as np
 from sklearn.cluster import KMeans
+import unity
 
 class LossType(Enum):
     BEST_EFFORT = 0
@@ -88,6 +89,15 @@ class PrimitiveModel(nn.Module):
     def fuzzy_forward(self, points, loss_type=LossType.BEST_EFFORT):
         return float(self.compute_loss(points, containment_type=ContainmentType.FUZZY, loss_type=loss_type))
 
+    def translate(self, offset):
+        raise NotImplementedError("Translate not implemented")
+
+    def uniform_scale(self, scalar):
+        raise NotImplementedError("Uniform scale not implemented")
+
+    def to_unity_collider(self):
+        raise NotImplementedError("Export to Unity collider not implemented")
+
 class OptimizerPreference:
     def __init__(self, start_lr, end_lr, params):
         self.start_lr = start_lr
@@ -122,28 +132,26 @@ class CapsuleModel(PrimitiveModel):
         self.p2.data[1] = cluster_b[1].item()
         self.p2.data[2] = cluster_b[2].item()
 
+        self.radius_scalar = 1.0
         self.radius_param.data[0] = self.inverse_radius(mean_horizontal_dist).item()
-
-        #inside_point_center = torch.mean(init_points, dim=0)
-
-        #self.p1.data[0] = inside_point_center[0].item() - 1.0
-        #self.p1.data[1] = inside_point_center[1].item()
-        #self.p1.data[2] = inside_point_center[2].item()
-
-        #self.p2.data[0] = inside_point_center[0].item() + 1.0
-        #self.p2.data[1] = inside_point_center[1].item()
-        #self.p2.data[2] = inside_point_center[2].item()
-
-        #self.radius_param.data[0] = self.inverse_radius(torch.tensor(1.0)).item()
 
         self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.p1, self.p2]),
                                  OptimizerPreference(5.0, 2.0, [self.radius_param])]
 
     def radius(self):
-        return torch.nn.functional.softplus(self.radius_param) + 0.5
+        return self.radius_scalar * (torch.nn.functional.softplus(self.radius_param) + 0.5)
 
     def inverse_radius(self, r):
-        return inverse_softplus(r - 0.5)
+        return inverse_softplus((r / self.radius_scalar) - 0.5)
+
+    def uniform_scale(self, scalar):
+        self.radius_scalar *= scalar
+        self.p1.data.mul_(scalar)
+        self.p2.data.mul_(scalar)
+
+    def translate(self, offset):
+        self.p1.data.add_(offset)
+        self.p2.data.add_(offset)
 
     def containment(self, points):
         n = self.p2 - self.p1
@@ -183,15 +191,18 @@ class CapsuleModel(PrimitiveModel):
         return capsule
 
     def exact_containment(self, points):
-        n = self.p2 - self.p1
+        p1 = self.p1.detach()
+        p2 = self.p2.detach()
+
+        n = p2 - p1
         h = torch.norm(n, 2)
         if h.item() == 0.0:
             n_hat = n
         else:
             n_hat = n / h
 
-        v = points - self.p1.unsqueeze(0)
-        w = points - self.p2.unsqueeze(0)
+        v = points - p1.unsqueeze(0)
+        w = points - p2.unsqueeze(0)
 
         # Project each point onto the central line segment of the capsule to determine if
         # the point lies between the top and bottom cylinder caps
@@ -204,7 +215,7 @@ class CapsuleModel(PrimitiveModel):
         # how far the point is from the central line horizontally
         v_horizontal = v - (v_projected.unsqueeze(1) * n_hat.unsqueeze(0))
         horizontal_dist = torch.norm(v_horizontal, 2, dim=1)
-        radius = self.radius()
+        radius = self.radius().detach()
         # Is the point within radius distance from the center?
         side = horizontal_dist <= radius
 
@@ -260,13 +271,22 @@ class CapsuleModel(PrimitiveModel):
                 offset = np.sin(theta) * q + np.cos(theta) * s
                 draw.draw_line(ax, p1 + offset, p2 + offset, color="g")
 
+    def to_unity_collider(self):
+        p1 = self.p1.detach().cpu()
+        p2 = self.p2.detach().cpu()
+        center = (p1 + p2) / 2.0
+        radius = self.radius().detach().cpu()
 
-            """
-            draw.draw_line(ax, (self.p1 + q).detach().numpy(), (self.p2 + q).detach().numpy())
-            draw.draw_line(ax, (self.p1 - q).detach().numpy(), (self.p2 - q).detach().numpy())
-            draw.draw_line(ax, (self.p1 + s).detach().numpy(), (self.p2 + s).detach().numpy())
-            draw.draw_line(ax, (self.p1 - s).detach().numpy(), (self.p2 - s).detach().numpy())
-            """
+        n = p2 - p1
+        h = torch.norm(n, 2)
+        n_hat = n / h
+        q = torchext.normalize(perpendicular_vector(n_hat))
+        s = torchext.normalize(torch.cross(n_hat, q))
+
+        rot_matrix = torch.stack([n_hat,q,s], dim=1)
+        rot_quat = rotation_matrix_to_quaternion(rot_matrix)
+
+        return unity.UnityCapsule(center, rot_quat, h.item(), radius.item())
 
 class CuboidModel(PrimitiveModel):
     def __init__(self, init_points, lambda_):
@@ -278,6 +298,8 @@ class CuboidModel(PrimitiveModel):
         self.max_corner_param = nn.Parameter(torch.randn(3))
         self.position = nn.Parameter(torch.randn(3))
         self.rotation = nn.Parameter(torch.randn(4))
+
+        self.scale = 1.0
 
         inside_point_center = torch.mean(init_points, dim=0)
         min_corner_0 = torch.mean(init_points[init_points[:, 0] <= inside_point_center[0]])
@@ -350,21 +372,21 @@ class CuboidModel(PrimitiveModel):
         return face1 * face2 * face3 * face4 * face5 * face6
 
     def inverse_min_corner(self, x):
-        return inverse_softplus(-x - 0.25)
+        return inverse_softplus(-(x / self.scale) - 0.25)
 
     def inverse_max_corner(self, x):
-        return inverse_softplus(x - 0.25)
+        return inverse_softplus((x / self.scale) - 0.25)
 
     def min_corner(self):
-        return -(torch.nn.functional.softplus(self.min_corner_param) + 0.25)
+        return self.scale * -(torch.nn.functional.softplus(self.min_corner_param) + 0.25)
 
     def max_corner(self):
-        return torch.nn.functional.softplus(self.max_corner_param) + 0.25
+        return self.scale * torch.nn.functional.softplus(self.max_corner_param) + 0.25
 
     def exact_containment(self, points):
-        min_corner = self.min_corner()
-        max_corner = self.max_corner()
-        transformed_points = invert_rotation(self.rotation, invert_translate(self.position, points))
+        min_corner = self.min_corner().detach()
+        max_corner = self.max_corner().detach()
+        transformed_points = invert_rotation(self.rotation.detach(), invert_translate(self.position.detach(), points))
 
         face1 = transformed_points[:, 0] <= max_corner[0]
         face2 = transformed_points[:, 0] >= min_corner[0]
@@ -424,7 +446,7 @@ class CuboidModel(PrimitiveModel):
         draw.draw_line(ax, p4, p8)
 
     def normalize(self):
-        n = torch.norm(self.rotation).item()
+        n = torch.norm(self.rotation, 2).item()
         if n == 0.0:
             self.rotation.data[0] = identity_quaternion[0].item()
             self.rotation.data[1] = identity_quaternion[1].item()
@@ -436,6 +458,24 @@ class CuboidModel(PrimitiveModel):
             self.rotation.data[2] /= n
             self.rotation.data[3] /= n
 
+    def center(self):
+        rotated_points = rotate(self.rotation, torch.stack([self.min_corner(), self.max_corner()]))
+        min_corner_world = self.position + rotated_points[0]
+        max_corner_world = self.position + rotated_points[1]
+        return (min_corner_world + max_corner_world) / 2.0
+
+    def translate(self, offset):
+        self.position.data.add_(offset)
+
+    def uniform_scale(self, scalar):
+        self.position.data.mul_(scalar)
+        self.scale *= scalar
+
+    def to_unity_collider(self):
+        min_corner = self.min_corner().detach().cpu()
+        max_corner = self.max_corner().detach().cpu()
+        size = max_corner - min_corner
+        return unity.UnityCube(self.center().detach(), self.rotation.data.detach().cpu(), size)
 
 class AxisAlignedCuboid(PrimitiveModel):
     def __init__(self, init_points, lambda_):
@@ -485,8 +525,8 @@ class AxisAlignedCuboid(PrimitiveModel):
         return face1 * face2 * face3 * face4 * face5 * face6
 
     def exact_containment(self, points):
-        min_corner = torch.min(self.min_corner, self.max_corner)
-        max_corner = torch.max(self.min_corner, self.max_corner)
+        min_corner = torch.min(self.min_corner.detach(), self.max_corner.detach())
+        max_corner = torch.max(self.min_corner.detach(), self.max_corner.detach())
 
         face1 = points[:, 0] <= max_corner[0]
         face2 = points[:, 0] >= min_corner[0]
@@ -548,6 +588,21 @@ class AxisAlignedCuboid(PrimitiveModel):
         self.max_corner.data[1] = max_corner[1].item()
         self.max_corner.data[2] = max_corner[2].item()
 
+    def translate(self, offset):
+        self.min_corner.data.add_(offset)
+        self.max_corner.data.add_(offset)
+
+    def uniform_scale(self, scalar):
+        self.min_corner.data.mul_(scalar)
+        self.max_corner.data.mul_(scalar)
+
+    def to_unity_collider(self):
+        min_corner = self.min_corner.data.detach().cpu()
+        max_corner = self.max_corner.data.detach().cpu()
+        center = (min_corner + max_corner) / 2.0
+        size = max_corner - min_corner
+        return unity.UnityCube(center, identity_quaternion, size)
+
 class SphereModel(PrimitiveModel):
     def __init__(self, init_points, lambda_):
         super().__init__(lambda_)
@@ -576,9 +631,9 @@ class SphereModel(PrimitiveModel):
         return differentiable_leq_c(distance_from_origin, self.radius, lambda_=self.lambda_)
 
     def exact_containment(self, points):
-        transformed_points = invert_translate(self.position, points)
+        transformed_points = invert_translate(self.position.detach(), points)
         distance_from_origin = torch.norm(transformed_points, dim=1)
-        return distance_from_origin <= self.radius
+        return distance_from_origin <= self.radius.detach()
 
     def volume(self):
         return (4.0 / 3.0) * math.pi * (self.radius ** 3)
@@ -610,6 +665,16 @@ class SphereModel(PrimitiveModel):
         z3 = transformed_points[2].view(z.shape)
 
         ax.plot_wireframe(x3.cpu().numpy(), y3.cpu().numpy(), z3.cpu().numpy(), color="b")
+
+    def translate(self, offset):
+        self.position.data.add_(offset)
+
+    def uniform_scale(self, scalar):
+        self.position.data.mul_(scalar)
+        self.radius.data.mul_(scalar)
+
+    def to_unity_collider(self):
+        return unity.UnitySphere(self.position.data.detach().cpu(), self.radius.data.detach().cpu().item())
 
 # Unit primitive models are rescaled to unit coordinates before checking containment
 # this may be problematic when used in conjunction with the sigmoid function because
