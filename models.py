@@ -133,6 +133,7 @@ class CapsuleModel(PrimitiveModel):
         self.p2.data[2] = cluster_b[2].item()
 
         self.radius_scalar = 1.0
+        mean_horizontal_dist = torch.max(mean_horizontal_dist, torch.tensor(self.radius_scalar * 0.55))
         self.radius_param.data[0] = self.inverse_radius(mean_horizontal_dist).item()
 
         self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.p1, self.p2]),
@@ -302,16 +303,47 @@ class CuboidModel(PrimitiveModel):
         self.scale = 1.0
 
         inside_point_center = torch.mean(init_points, dim=0)
-        min_corner_0 = torch.mean(init_points[init_points[:, 0] <= inside_point_center[0]])
-        min_corner_1 = torch.mean(init_points[init_points[:, 1] <= inside_point_center[1]])
-        min_corner_2 = torch.mean(init_points[init_points[:, 2] <= inside_point_center[2]])
+
+        satisfying_points = init_points[init_points[:, 0] <= inside_point_center[0]]
+        if satisfying_points.shape[0] > 0:
+            min_corner_0 = torch.mean(satisfying_points)
+        else:
+            min_corner_0 = inside_point_center[0]
+
+        satisfying_points = init_points[init_points[:, 1] <= inside_point_center[1]]
+        if satisfying_points.shape[0] > 0:
+            min_corner_1 = torch.mean(satisfying_points)
+        else:
+            min_corner_1 = inside_point_center[1]
+
+        satisfying_points = init_points[init_points[:, 2] <= inside_point_center[2]]
+        if satisfying_points.shape[0] > 0:
+            min_corner_2 = torch.mean(satisfying_points)
+        else:
+            min_corner_2 = inside_point_center[2]
+
         min_delta = torch.tensor([min_corner_0, min_corner_1, min_corner_2]) - inside_point_center
         min_delta = torch.min(min_delta, torch.tensor([-0.3, -0.3, -0.3]))
         min_corner = self.inverse_min_corner(min_delta)
 
-        max_corner_0 = torch.mean(init_points[init_points[:, 0] > inside_point_center[0]])
-        max_corner_1 = torch.mean(init_points[init_points[:, 1] > inside_point_center[1]])
-        max_corner_2 = torch.mean(init_points[init_points[:, 2] > inside_point_center[2]])
+        satisfying_points = init_points[init_points[:, 0] > inside_point_center[0]]
+        if satisfying_points.shape[0] > 0:
+            max_corner_0 = torch.mean(satisfying_points)
+        else:
+            max_corner_0 = inside_point_center[0]
+
+        satisfying_points = init_points[init_points[:, 1] > inside_point_center[1]]
+        if satisfying_points.shape[0] > 0:
+            max_corner_1 = torch.mean(satisfying_points)
+        else:
+            max_corner_1 = inside_point_center[1]
+
+        satisfying_points = init_points[init_points[:, 2] > inside_point_center[2]]
+        if satisfying_points.shape[0] > 0:
+            max_corner_2 = torch.mean(satisfying_points)
+        else:
+            max_corner_2 = inside_point_center[2]
+
         max_delta = torch.tensor([max_corner_0, max_corner_1, max_corner_2]) - inside_point_center
         max_delta = torch.max(max_delta, torch.tensor([0.3, 0.3, 0.3]))
         max_corner = self.inverse_max_corner(max_delta)

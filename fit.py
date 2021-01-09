@@ -105,23 +105,25 @@ def restore_point_coordinates(model, offset, voxel_size):
     model.uniform_scale(voxel_size)
 
 def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
-               visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_fuzzy_containment=True, use_cuda=False,
-               cuda_device=None):
+               visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_cuda=False,
+               cuda_device=None, component_threshold=0.05):
     (voxel_grid, offset) = points_to_voxel_grid(points, voxel_size)
     if use_cuda:
         offset = offset.cuda(device=cuda_device)
     models = fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_spheres=use_spheres,
                             use_boxes=use_boxes, use_cylinders=use_cylinders, visualize_intermediate=visualize_intermediate,
-                            loss_type=loss_type, use_fuzzy_containment=use_fuzzy_containment, use_cuda=use_cuda,
-                            cuda_device=cuda_device)
+                            loss_type=loss_type, use_cuda=use_cuda,
+                            cuda_device=cuda_device, component_threshold=component_threshold)
     for model in models:
         restore_point_coordinates(model, offset, voxel_size)
     return models
 
 def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
-                   visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_fuzzy_containment=True,
-                   use_cuda=False, cuda_device=None):
+                   visualize_intermediate=False, loss_type=LossType.BEST_EFFORT,
+                   use_cuda=False, cuda_device=None, component_threshold=0.05):
     fitted_models = []
+
+    num_voxels_total = voxel_grid.sum().item()
 
     voxels_remaining = voxel_grid.clone()
     connected_components = voxel.connected_components(voxels_remaining)
@@ -130,7 +132,11 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
     while len(connected_components) > 0 and i < max_num_fitted_models:
         #print("Number of connected components: " + str(len(connected_components)))
 
-        component = argmax(connected_components, lambda component: component.shape[0])
+        component = argmax(connected_components, lambda comp: comp.shape[0])
+
+        if (float(component.shape[0]) / num_voxels_total) <= component_threshold:
+            print("Breaking on component threshold of " + str(float(component.shape[0]) / num_voxels_total))
+            break
 
         component_points = component.float()
         if use_cuda:
