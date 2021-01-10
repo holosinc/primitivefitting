@@ -1,5 +1,6 @@
 import torch
 import itertools
+import torchext
 
 def valid_coord(voxel_grid, voxel):
     return voxel[0] >= 0 and voxel[0] < voxel_grid.shape[0] and voxel[1] >= 0 and voxel[1] < voxel_grid.shape[1] and voxel[2] >= 0 and voxel[2] < voxel_grid.shape[2]
@@ -8,7 +9,7 @@ def voxel_neighbors(voxel):
     (x, y, z) = voxel
     return [(x + 1, y, z), (x - 1, y, z), (x, y + 1, z), (x, y - 1, z), (x, y, z + 1), (x, y, z - 1)]
 
-def connected_components(voxel_grid):
+def connected_components_sequential(voxel_grid):
     visited = torch.zeros_like(voxel_grid, dtype=torch.bool)
 
     def explore_component(start_voxel):
@@ -22,6 +23,35 @@ def connected_components(voxel_grid):
                 for neighbor in voxel_neighbors(voxel):
                     voxels_to_visit.append(neighbor)
         return torch.tensor(ret, dtype=torch.long)
+
+    components = []
+    for voxel in itertools.product(range(voxel_grid.shape[0]), range(voxel_grid.shape[1]), range(voxel_grid.shape[2])):
+        if not get_voxel(visited, voxel) and get_voxel(voxel_grid, voxel):
+            components.append(explore_component(voxel))
+
+    return components
+
+def connected_components(voxel_grid):
+    visited = torch.zeros_like(voxel_grid, dtype=torch.bool)
+    device = torchext.get_device(voxel_grid)
+
+    def explore_component(start_voxel):
+        ret = []
+        voxels_to_visit = torch.tensor([start_voxel], device=device)
+        while voxels_to_visit.shape[0] > 0:
+            # Batch check for valid coord. Filter out invalid coordinates
+            voxels_to_visit = voxels_to_visit[batch_valid_coord(voxel_grid, voxels_to_visit)]
+            # Filter out voxels already visited
+            voxels_to_visit = voxels_to_visit[~(visited[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]])]
+            # Filter out voxels that are actually full
+            voxels_to_visit = voxels_to_visit[voxel_grid[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]]]
+            # Consider only the unique voxels
+            voxels_to_visit = torch.unique(voxels_to_visit, dim=0)
+            if voxels_to_visit.shape[0] > 0:
+                visited[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]] = True
+                ret.append(voxels_to_visit)
+                voxels_to_visit = batch_neighbors(voxels_to_visit)
+        return torch.cat(ret, dim=0)
 
     components = []
     for voxel in itertools.product(range(voxel_grid.shape[0]), range(voxel_grid.shape[1]), range(voxel_grid.shape[2])):
@@ -87,19 +117,25 @@ def fill_holes(voxel_grid):
     voxels_to_visit = torch.tensor(list(voxels_to_visit_set), dtype=torch.long)
 
     while voxels_to_visit.shape[0] > 0:
+        # Filter out so only valid coordinates remain
         voxels_to_visit = voxels_to_visit[batch_valid_coord(voxel_grid, voxels_to_visit)]
+        # Filter out so that we are considering only voxels we have not visited
         voxels_to_visit = voxels_to_visit[~(visited[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]])]
+        # Mark these voxels we're looking at right now as visited
         visited[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]] = True
+        # Only consider voxels that are empty
         voxels_to_visit = voxels_to_visit[~(voxel_grid[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]])]
-        ret[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]] = False
+        # Only consider unique voxels
         voxels_to_visit = torch.unique(voxels_to_visit, dim=0)
+        # Mark these voxels in the return grid as empty
+        ret[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]] = False
         if voxels_to_visit.shape[0] > 0:
             voxels_to_visit = batch_neighbors(voxels_to_visit)
 
     return ret
 
 # Returns a new voxel grid with all holes in the voxel grid filled
-def fill_holes_old(voxel_grid):
+def fill_holes_sequential(voxel_grid):
     visited = torch.zeros_like(voxel_grid, dtype=torch.bool)
     ret = torch.ones_like(voxel_grid, dtype=torch.bool)
 
