@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import math
 import torchext
-from torchext import clamp01, differentiable_leq_one, differentiable_geq_neg_one, numerically_stable_sigmoid,\
+from torchext import clamp01, numerically_stable_sigmoid,\
     differentiable_leq_c, differentiable_geq_c, inverse_softplus, get_device, perpendicular_vector
-from three_d import identity_quaternion, scale, invert_rotation, translate, invert_translate, rotate, rotation_matrix_to_quaternion
+from three_d import identity_quaternion, invert_rotation, translate, invert_translate, rotate, rotation_matrix_to_quaternion
 import draw
 import numpy as np
 from sklearn.cluster import KMeans
@@ -356,25 +356,6 @@ class CuboidModel(PrimitiveModel):
         self.max_corner_param.data[1] = max_corner[1].item()
         self.max_corner_param.data[2] = max_corner[2].item()
 
-        """
-        delta = init_points - inside_point_center.unsqueeze(0)
-        min_distance_from_center = torch.min(delta, dim=0).values
-        max_distance_from_center = torch.max(delta, dim=0).values
-
-        min_distance_from_center = torch.min(min_distance_from_center, torch.tensor([-0.3, -0.3, -0.3]))
-        min_distance_from_center_remapped = self.inverse_min_corner(min_distance_from_center)
-        max_distance_from_center = torch.max(max_distance_from_center, torch.tensor([0.3, 0.3, 0.3]))
-        max_distance_from_center_remapped = self.inverse_max_corner(max_distance_from_center)
-
-        self.min_corner_param.data[0] = min_distance_from_center_remapped[0].item()
-        self.min_corner_param.data[1] = min_distance_from_center_remapped[1].item()
-        self.min_corner_param.data[2] = min_distance_from_center_remapped[2].item()
-
-        self.max_corner_param.data[0] = max_distance_from_center_remapped[0].item()
-        self.max_corner_param.data[1] = max_distance_from_center_remapped[1].item()
-        self.max_corner_param.data[2] = max_distance_from_center_remapped[2].item()
-        """
-
         self.position.data[0] = inside_point_center[0].item()
         self.position.data[1] = inside_point_center[1].item()
         self.position.data[2] = inside_point_center[2].item()
@@ -400,7 +381,6 @@ class CuboidModel(PrimitiveModel):
         face4 = differentiable_geq_c(transformed_points[:, 1], min_corner[1], lambda_=self.lambda_)
         face5 = differentiable_leq_c(transformed_points[:, 2], max_corner[2], lambda_=self.lambda_)
         face6 = differentiable_geq_c(transformed_points[:, 2], min_corner[2], lambda_=self.lambda_)
-        # return (face1 * face2 * face3 * face4 * face5 * face6 + 0.00001).pow(1.0 / 6.0)
         return face1 * face2 * face3 * face4 * face5 * face6
 
     def inverse_min_corner(self, x):
@@ -539,12 +519,6 @@ class AxisAlignedCuboid(PrimitiveModel):
 
         self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.min_corner, self.max_corner])]
 
-        pos_range = (torch.min(init_points, dim=0).values, torch.max(init_points, dim=0).values)
-        self.ranges = {
-            "min_corner": pos_range,
-            "max_corner": pos_range
-        }
-
     def containment(self, points):
         min_corner = torch.min(self.min_corner, self.max_corner)
         max_corner = torch.max(self.min_corner, self.max_corner)
@@ -653,11 +627,6 @@ class SphereModel(PrimitiveModel):
         self.radius.data[0] = max_distance_from_center.item()
 
         self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.position]), OptimizerPreference(7.0, 3.0, [self.radius])]
-
-        self.ranges = {
-            "position": (torch.min(init_points, dim=0).values, torch.max(init_points, dim=0).values),
-            "radius": (torch.tensor([0.5]), torch.tensor([2.0 * max_distance_from_center.item()]))
-        }
 
     def containment(self, points):
         transformed_points = invert_translate(self.position, points)

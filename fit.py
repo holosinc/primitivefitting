@@ -14,16 +14,6 @@ class NumericalInstabilityException(Exception):
 def optimize(points, model, loss_type=LossType.BEST_EFFORT):
     num_steps = 500
 
-    """
-    ps_optimizer = ParticleSwarmOptimizer(30, model.state_dict(), model.ranges, lambda: model(points, loss_type=loss_type))
-    for i in range(50):
-        ps_optimizer.step()
-        print("PS step " + str(i) + ": " + str(ps_optimizer.best_swarm_value))
-
-    print("Best swarm position blitted")
-    ps_optimizer.blit_best_swarm_position()
-    """
-
     optimizers = [torch.optim.SGD(optimizer_param.params, lr=0.1, momentum=0.9) for optimizer_param in model.optimizer_config]
     schedulers = [(lambda x: torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, x.start_lr, x.end_lr)))(optimizer_param)
                   for (optimizer, optimizer_param) in zip(optimizers, model.optimizer_config)]
