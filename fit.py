@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import draw
 import voxel
 from utils import argmin, argmax, partial, map_range
-from models import EllipsoidModel, BoxModel, CylinderModel, LossType, SphereModel, AxisAlignedCuboid, CuboidModel, CapsuleModel
+from models import LossType, SphereModel, AxisAlignedCuboid, CuboidModel, CapsuleModel
 import math
 from PSOptimizer import ParticleSwarmOptimizer
 
@@ -24,14 +24,10 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
     ps_optimizer.blit_best_swarm_position()
     """
 
-    #optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-
     optimizers = [torch.optim.SGD(optimizer_param.params, lr=0.1, momentum=0.9) for optimizer_param in model.optimizer_config]
     schedulers = [(lambda x: torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, x.start_lr, x.end_lr)))(optimizer_param)
                   for (optimizer, optimizer_param) in zip(optimizers, model.optimizer_config)]
 
-    #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 0.1, 0.05))
-    #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: map_range(i, 0.0, num_steps - 1, 20.0, 10.0))
     model.train()
 
     #with torch.autograd.detect_anomaly():
@@ -39,13 +35,11 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
         #model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
         model.lambda_ = map_range(i, 0, num_steps - 1, 0.01, 8.0)
 
-        #optimizer.zero_grad()
         for optimizer in optimizers:
             optimizer.zero_grad()
 
         loss = model(points, loss_type=loss_type)
         print("Loss: " + str(loss))
-        #print("Fuzzy loss: " + str(model.fuzzy_forward(points, loss_type=loss_type)))
 
         if math.isnan(loss.item()):
             raise NumericalInstabilityException("Loss score was NaN. Consider using torch.autograd.detect_anomaly() to track down the source of the NaN")
@@ -60,27 +54,17 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
         #print("Rot", model.rotation, model.rotation.grad)
         #print("Inv Sca", model.inverse_scale, model.inverse_scale.grad)
 
-        #optimizer.step()
         for optimizer in optimizers:
             optimizer.step()
 
         model.normalize()
-
-        #if isinstance(model, BoxModel):
-            #print("Box loss:", loss)
-        #elif isinstance(model, SphereModel):
-            #print("Sphere loss:", loss)
-        #elif isinstance(model, CylinderModel):
-            #print("Cylinder loss:", loss)
-
-        #scheduler.step()
 
         for scheduler in schedulers:
             scheduler.step()
 
     # Don't use the raw loss score since the different geometric models may have different incomparable loss scores
     # (like comparing apples to oranges)
-    return model.fuzzy_forward(points, loss_type=loss_type)
+    return model.exact_forward(points, loss_type=loss_type)
 
 def points_to_voxel_grid(points, voxel_size):
     integer_points = torch.round(points / voxel_size).long()
@@ -104,21 +88,21 @@ def restore_point_coordinates(model, offset, voxel_size):
     model.translate(-offset)
     model.uniform_scale(voxel_size)
 
-def fit_points(points, voxel_size, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
+def fit_points(points, voxel_size, max_num_fitted_models=5, use_sphere=True, use_cuboid=True, use_capsule=False,
                visualize_intermediate=False, loss_type=LossType.BEST_EFFORT, use_cuda=False,
                cuda_device=None, component_threshold=0.05):
     (voxel_grid, offset) = points_to_voxel_grid(points, voxel_size)
     if use_cuda:
         offset = offset.cuda(device=cuda_device)
-    models = fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_spheres=use_spheres,
-                            use_boxes=use_boxes, use_cylinders=use_cylinders, visualize_intermediate=visualize_intermediate,
+    models = fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_sphere=use_sphere,
+                            use_cuboid=use_cuboid, use_capsule=use_capsule, visualize_intermediate=visualize_intermediate,
                             loss_type=loss_type, use_cuda=use_cuda,
                             cuda_device=cuda_device, component_threshold=component_threshold)
     for model in models:
         restore_point_coordinates(model, offset, voxel_size)
     return models
 
-def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_boxes=True, use_cylinders=False,
+def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_sphere=True, use_cuboid=True, use_capsule=False,
                    visualize_intermediate=False, loss_type=LossType.BEST_EFFORT,
                    use_cuda=False, cuda_device=None, component_threshold=0.05):
     fitted_models = []
@@ -130,12 +114,9 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
 
     i = 0
     while len(connected_components) > 0 and i < max_num_fitted_models:
-        #print("Number of connected components: " + str(len(connected_components)))
-
         component = argmax(connected_components, lambda comp: comp.shape[0])
 
         if (float(component.shape[0]) / num_voxels_total) <= component_threshold:
-            print("Breaking on component threshold of " + str(float(component.shape[0]) / num_voxels_total))
             break
 
         component_points = component.float()
@@ -145,15 +126,11 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
         lambda_ = 1.0
 
         potential_models = []
-        if use_spheres:
-            #potential_models.append(EllipsoidModel(component_points, lambda_))
+        if use_sphere:
             potential_models.append(SphereModel(component_points, lambda_))
-        if use_boxes:
-            #potential_models.append(BoxModel(component_points, lambda_))
-            #potential_models.append(AxisAlignedCuboid(component_points, lambda_))
+        if use_cuboid:
             potential_models.append(CuboidModel(component_points, lambda_))
-        if use_cylinders:
-            #potential_models.append(CylinderModel(component_points, lambda_))
+        if use_capsule:
             potential_models.append(CapsuleModel(component_points, lambda_))
 
         if use_cuda:
@@ -169,12 +146,7 @@ def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_spheres=True, use_bo
             best_model.draw(ax)
             plt.show()
 
-        points_inside_mask = best_model.fuzzy_containment(component_points)
-        #points_outside_mask = ~points_inside_mask
-
-        #print(best_model)
-        #print("Number of points exactly inside: " + str(points_inside_mask.sum()))
-        #print("Number of points exactly outside: " + str(points_outside_mask.sum()))
+        points_inside_mask = best_model.exact_containment(component_points)
 
         indices_covered = component[points_inside_mask, :]
         voxel.batch_set(voxels_remaining, indices_covered, False)

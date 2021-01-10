@@ -112,9 +112,9 @@ class CapsuleModel(PrimitiveModel):
         self.p2 = nn.Parameter(torch.randn(3))
         self.radius_param = nn.Parameter(torch.randn(1))
 
-        kmeans = KMeans(n_clusters=2).fit(init_points.numpy())
-        cluster_a = torch.tensor(kmeans.cluster_centers_[0])
-        cluster_b = torch.tensor(kmeans.cluster_centers_[1])
+        kmeans = KMeans(n_clusters=2).fit(init_points.cpu().numpy())
+        cluster_a = torch.tensor(kmeans.cluster_centers_[0], device=torchext.get_device(init_points))
+        cluster_b = torch.tensor(kmeans.cluster_centers_[1], device=torchext.get_device(init_points))
 
         n_hat = torchext.normalize(cluster_b - cluster_a)
         v = init_points - cluster_a.unsqueeze(0)
@@ -133,7 +133,7 @@ class CapsuleModel(PrimitiveModel):
         self.p2.data[2] = cluster_b[2].item()
 
         self.radius_scalar = 1.0
-        mean_horizontal_dist = torch.max(mean_horizontal_dist, torch.tensor(self.radius_scalar * 0.55))
+        mean_horizontal_dist = torch.max(mean_horizontal_dist, torch.tensor(self.radius_scalar * 0.55, device=torchext.get_device(mean_horizontal_dist)))
         self.radius_param.data[0] = self.inverse_radius(mean_horizontal_dist).item()
 
         self.optimizer_config = [OptimizerPreference(15.0, 7.0, [self.p1, self.p2]),
@@ -262,11 +262,11 @@ class CapsuleModel(PrimitiveModel):
             q = torchext.normalize(perpendicular_vector(n_hat))
             s = torchext.normalize(torch.cross(n_hat, q))
 
-            p1 = self.p1.detach().numpy()
-            p2 = self.p2.detach().numpy()
+            p1 = self.p1.detach().cpu().numpy()
+            p2 = self.p2.detach().cpu().numpy()
 
-            q = (q * radius).detach().numpy()
-            s = (s * radius).detach().numpy()
+            q = (q * radius).detach().cpu().numpy()
+            s = (s * radius).detach().cpu().numpy()
 
             for theta in np.mgrid[0:2 * np.pi:20j]:
                 offset = np.sin(theta) * q + np.cos(theta) * s
@@ -322,8 +322,8 @@ class CuboidModel(PrimitiveModel):
         else:
             min_corner_2 = inside_point_center[2]
 
-        min_delta = torch.tensor([min_corner_0, min_corner_1, min_corner_2]) - inside_point_center
-        min_delta = torch.min(min_delta, torch.tensor([-0.3, -0.3, -0.3]))
+        min_delta = torch.tensor([min_corner_0, min_corner_1, min_corner_2], device=torchext.get_device(min_corner_0)) - inside_point_center
+        min_delta = torch.min(min_delta, torch.tensor([-0.3, -0.3, -0.3], device=torchext.get_device(min_delta)))
         min_corner = self.inverse_min_corner(min_delta)
 
         satisfying_points = init_points[init_points[:, 0] > inside_point_center[0]]
@@ -344,8 +344,8 @@ class CuboidModel(PrimitiveModel):
         else:
             max_corner_2 = inside_point_center[2]
 
-        max_delta = torch.tensor([max_corner_0, max_corner_1, max_corner_2]) - inside_point_center
-        max_delta = torch.max(max_delta, torch.tensor([0.3, 0.3, 0.3]))
+        max_delta = torch.tensor([max_corner_0, max_corner_1, max_corner_2], device=torchext.get_device(max_corner_0)) - inside_point_center
+        max_delta = torch.max(max_delta, torch.tensor([0.3, 0.3, 0.3], device=torchext.get_device(max_delta)))
         max_corner = self.inverse_max_corner(max_delta)
 
         self.min_corner_param.data[0] = min_corner[0].item()
@@ -436,19 +436,21 @@ class CuboidModel(PrimitiveModel):
         min_corner = self.min_corner()
         max_corner = self.max_corner()
 
+        device = torchext.get_device(min_corner)
+
         # Square 1
         p1 = min_corner
-        p2 = torch.tensor([max_corner[0], min_corner[1], min_corner[2]])
-        p3 = torch.tensor([max_corner[0], max_corner[1], min_corner[2]])
-        p4 = torch.tensor([min_corner[0], max_corner[1], min_corner[2]])
+        p2 = torch.tensor([max_corner[0], min_corner[1], min_corner[2]], device=device)
+        p3 = torch.tensor([max_corner[0], max_corner[1], min_corner[2]], device=device)
+        p4 = torch.tensor([min_corner[0], max_corner[1], min_corner[2]], device=device)
 
         # Square 2
-        p5 = torch.tensor([min_corner[0], min_corner[1], max_corner[2]])
-        p6 = torch.tensor([max_corner[0], min_corner[1], max_corner[2]])
+        p5 = torch.tensor([min_corner[0], min_corner[1], max_corner[2]], device=device)
+        p6 = torch.tensor([max_corner[0], min_corner[1], max_corner[2]], device=device)
         p7 = max_corner
-        p8 = torch.tensor([min_corner[0], max_corner[1], max_corner[2]])
+        p8 = torch.tensor([min_corner[0], max_corner[1], max_corner[2]], device=device)
 
-        points = translate(self.position, rotate(self.rotation, torch.stack([p1, p2, p3, p4, p5, p6, p7, p8]))).detach().numpy()
+        points = translate(self.position, rotate(self.rotation, torch.stack([p1, p2, p3, p4, p5, p6, p7, p8]))).detach().cpu().numpy()
 
         p1 = points[0]
         p2 = points[1]
@@ -707,166 +709,3 @@ class SphereModel(PrimitiveModel):
 
     def to_unity_collider(self):
         return unity.UnitySphere(self.position.data.detach().cpu(), self.radius.data.detach().cpu().item())
-
-# Unit primitive models are rescaled to unit coordinates before checking containment
-# this may be problematic when used in conjunction with the sigmoid function because
-# the scale may directly impact the containment calculation
-class UnitPrimitiveModel(PrimitiveModel):
-    def __init__(self, init_points, lambda_):
-        super().__init__(lambda_)
-        self.position = nn.Parameter(torch.randn((3,)))
-        self.rotation = nn.Parameter(torch.randn((4,)))
-        self.inverse_scale = nn.Parameter(torch.randn((3,)))
-
-        inside_point_center = torch.mean(init_points, dim=0)
-        max_distance_from_center = torch.max(torch.abs(init_points - (inside_point_center.unsqueeze(0))), dim=0).values
-
-        self.position.data[0] = inside_point_center[0].item()
-        self.position.data[1] = inside_point_center[1].item()
-        self.position.data[2] = inside_point_center[2].item()
-
-        self.inverse_scale.data[0] = 1.0 / max(max_distance_from_center[0].item(), 0.5)
-        self.inverse_scale.data[1] = 1.0 / max(max_distance_from_center[1].item(), 0.5)
-        self.inverse_scale.data[2] = 1.0 / max(max_distance_from_center[2].item(), 0.5)
-
-        self.rotation.data[0] = identity_quaternion[0].item()
-        self.rotation.data[1] = identity_quaternion[1].item()
-        self.rotation.data[2] = identity_quaternion[2].item()
-        self.rotation.data[3] = identity_quaternion[3].item()
-
-        self.ranges = {
-            "position": (torch.min(init_points, dim=0).values, torch.max(init_points, dim=0).values),
-            "rotation": (torch.tensor([-1.0, -1.0, -1.0, -1.0]), torch.tensor([1.0, 1.0, 1.0, 1.0])),
-            "inverse_scale": (self.inverse_scale.clone(), torch.tensor([2.0, 2.0, 2.0]))
-        }
-
-    def get_device(self):
-        if self.position.is_cuda:
-            return self.position.get_device()
-        else:
-            return None
-
-    def get_scale(self):
-        return 1.0 / self.inverse_scale
-
-    def inverse_transform(self, points):
-        return scale(self.inverse_scale, invert_rotation(self.rotation, invert_translate(self.position, points)))
-
-    def transform(self, points):
-        return translate(self.position, rotate(self.rotation, scale(self.get_scale(), points)))
-
-    def normalize(self):
-        n = torch.norm(self.rotation).item()
-        if n == 0.0:
-            self.rotation.data[0] = identity_quaternion[0].item()
-            self.rotation.data[1] = identity_quaternion[1].item()
-            self.rotation.data[2] = identity_quaternion[2].item()
-            self.rotation.data[3] = identity_quaternion[3].item()
-        else:
-            self.rotation.data[0] /= n
-            self.rotation.data[1] /= n
-            self.rotation.data[2] /= n
-            self.rotation.data[3] /= n
-        self.inverse_scale.data.abs_()
-
-    def __str__(self):
-        return "Position: " + str(self.position) + "\nRotation: " + str(self.rotation) + "\nScale: " + str(self.get_scale())
-
-class EllipsoidModel(UnitPrimitiveModel):
-    def __init__(self, init_points, lambda_):
-        super().__init__(init_points, lambda_)
-
-    def exact_containment(self, points):
-        transformed_points = self.inverse_transform(points)
-        distance_from_origin = torch.norm(transformed_points, dim=1)
-        return distance_from_origin <= 1.0
-
-    def containment(self, points):
-        transformed_points = self.inverse_transform(points)
-        distance_from_origin = torch.norm(transformed_points, dim=1)
-        return differentiable_leq_one(distance_from_origin, lambda_=self.lambda_)
-
-    def volume(self):
-        scale = self.get_scale()
-        return 4.0 / 3.0 * math.pi * scale.prod()
-
-    def __str__(self):
-        return "Sphere Model\n" + super().__str__()
-
-    def draw(self, ax):
-        # Move over 0.5 since integer coordinates in the model represent center of voxels,
-        # but when drawing integer coordinates are voxel corners
-        self.position.data += 0.5
-        draw.draw_sphere(ax, self)
-        self.position.data -= 0.5
-
-class BoxModel(UnitPrimitiveModel):
-    def __init__(self, init_points, lambda_):
-        super().__init__(init_points, lambda_)
-
-    def exact_containment(self, points):
-        transformed_points = self.inverse_transform(points)
-        face1 = transformed_points[:, 0] <= 1.0
-        face2 = transformed_points[:, 0] >= -1.0
-        face3 = transformed_points[:, 1] <= 1.0
-        face4 = transformed_points[:, 1] >= -1.0
-        face5 = transformed_points[:, 2] <= 1.0
-        face6 = transformed_points[:, 2] >= -1.0
-        return face1 & face2 & face3 & face4 & face5 & face6
-
-    def containment(self, points):
-        transformed_points = self.inverse_transform(points)
-        face1 = differentiable_leq_one(transformed_points[:, 0], lambda_=self.lambda_)
-        face2 = differentiable_geq_neg_one(transformed_points[:, 0], lambda_=self.lambda_)
-        face3 = differentiable_leq_one(transformed_points[:, 1], lambda_=self.lambda_)
-        face4 = differentiable_geq_neg_one(transformed_points[:, 1], lambda_=self.lambda_)
-        face5 = differentiable_leq_one(transformed_points[:, 2], lambda_=self.lambda_)
-        face6 = differentiable_geq_neg_one(transformed_points[:, 2], lambda_=self.lambda_)
-        return (face1 * face2 * face3 * face4 * face5 * face6 + 0.00001).pow(1.0 / 6.0)
-
-    def volume(self):
-        scale = self.get_scale()
-        return 8.0 * scale.prod()
-
-    def __str__(self):
-        return "Box Model\n" + super().__str__()
-
-    def draw(self, ax):
-        self.position.data += 0.5
-        draw.draw_cube(ax, self)
-        self.position.data -= 0.5
-
-class CylinderModel(UnitPrimitiveModel):
-    def __init__(self, init_points, lambda_):
-        super().__init__(init_points, lambda_)
-
-    def exact_containment(self, points):
-        transformed_points = self.inverse_transform(points)
-        face_top = transformed_points[:, 1] <= 1.0
-        face_bottom = transformed_points[:, 1] >= -1.0
-        points_xz = transformed_points[:, [0, 2]]
-        distance_from_axis = torch.norm(points_xz, dim=1)
-        curved_side = distance_from_axis <= 1.0
-        return face_top & face_bottom & curved_side
-
-    def containment(self, points):
-        transformed_points = self.inverse_transform(points)
-        face_top = differentiable_leq_one(transformed_points[:, 1], lambda_=self.lambda_)
-        face_bottom = differentiable_geq_neg_one(transformed_points[:, 1], lambda_=self.lambda_)
-        points_xz = transformed_points[:, [0, 2]]
-        distance_from_axis = torch.norm(points_xz, dim=1)
-        curved_side = differentiable_leq_one(distance_from_axis, lambda_=self.lambda_)
-        return (face_top * face_bottom * curved_side + 0.00001).pow(1.0 / 3.0)
-        #return torch.min(torch.min(face_top, face_bottom), curved_side)
-
-    def __str__(self):
-        return "Cylinder Model\n" + super().__str__()
-
-    def volume(self):
-        scale = self.get_scale()
-        return 2.0 * math.pi * scale.prod()
-
-    def draw(self, ax):
-        self.position.data += 0.5
-        draw.draw_cylinder(ax, self)
-        self.position.data -= 0.5

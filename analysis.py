@@ -27,13 +27,12 @@ def analyze(point_file_path, analysis_results_path):
     use_cylinders = True
     loss_type = LossType.BEST_MATCH
     visualize_intermediate = False
-    fuzzy_containment = False
     use_cuda = False
 
     start_time = time.perf_counter()
-    fitted_models = fit.fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_boxes=use_boxes,
-                                       use_spheres=use_spheres,
-                                       use_cylinders=use_cylinders, loss_type=loss_type,
+    fitted_models = fit.fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_cuboid=use_boxes,
+                                       use_sphere=use_spheres,
+                                       use_capsule=use_cylinders, loss_type=loss_type,
                                        visualize_intermediate=visualize_intermediate,
                                        use_cuda=use_cuda)
     end_time = time.perf_counter()
@@ -47,7 +46,7 @@ def analyze(point_file_path, analysis_results_path):
 
     print(fitted_models)
 
-for model_name in listdirs(voxel_model_dir):
+for model_name in listdirs(voxel_model_dir)[1:]:
     os.mkdir(os.path.join("analysis", model_name))
     for point_file_name in os.listdir(os.path.join(voxel_model_dir, model_name)):
         if point_file_name.endswith(".txt"):

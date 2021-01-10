@@ -130,8 +130,8 @@ print("Voxel grid size: " + str(voxel_grid.shape))
 if use_cuda:
     offset = offset.cuda()
 print("Voxel grid created. Fitting primitives to voxel grid")
-fitted_models = fit.fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_boxes=use_boxes, use_spheres=use_spheres,
-                                   use_cylinders=use_cylinders, loss_type=loss_type, visualize_intermediate=visualize_intermediate,
+fitted_models = fit.fit_voxel_grid(voxel_grid, max_num_fitted_models=max_num_fitted_models, use_cuboid=use_boxes, use_sphere=use_spheres,
+                                   use_capsule=use_cylinders, loss_type=loss_type, visualize_intermediate=visualize_intermediate,
                                    use_fuzzy_containment=fuzzy_containment, use_cuda=use_cuda)
 
 print("Primitive fitting complete")
