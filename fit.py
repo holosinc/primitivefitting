@@ -11,7 +11,7 @@ from PSOptimizer import ParticleSwarmOptimizer
 class NumericalInstabilityException(Exception):
    pass
 
-def optimize(points, model, loss_type=LossType.BEST_EFFORT):
+def optimize(points, model, loss_type=LossType.BEST_MATCH):
     num_steps = 500
 
     optimizers = [torch.optim.SGD(optimizer_param.params, lr=0.1, momentum=0.9) for optimizer_param in model.optimizer_config]
@@ -20,9 +20,9 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
 
     model.train()
 
+    # Uncomment the line below in the event of an anomaly detection
     #with torch.autograd.detect_anomaly():
     for i in range(num_steps):
-        #model.lambda_ = map_range(i, 0, num_steps - 1, 0.5, 8.0)
         model.lambda_ = map_range(i, 0, num_steps - 1, 0.01, 8.0)
 
         for optimizer in optimizers:
@@ -39,10 +39,6 @@ def optimize(points, model, loss_type=LossType.BEST_EFFORT):
         # Occasionally the gradient can blow up, so clip it here to make
         # sure we don't jump too far around the parameter space
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
-
-        #print("Pos", model.position, model.position.grad)
-        #print("Rot", model.rotation, model.rotation.grad)
-        #print("Inv Sca", model.inverse_scale, model.inverse_scale.grad)
 
         for optimizer in optimizers:
             optimizer.step()
@@ -70,7 +66,8 @@ def points_to_voxel_grid(points, voxel_size):
     # Assign the point cloud to the new voxel grid
     voxel.batch_set(voxel_grid, integer_points, True)
 
-    voxel_grid = voxel.fill_holes(voxel_grid)
+    #voxel_grid = voxel.fill_holes(voxel_grid)
+    voxel_grid = voxel.fill_holes_sequential(voxel_grid)
 
     return (voxel_grid, offset)
 
@@ -92,7 +89,7 @@ def fit_points(points, voxel_size, max_num_fitted_models=5, use_sphere=True, use
         restore_point_coordinates(model, offset, voxel_size)
     return models
 
-def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_sphere=True, use_cuboid=True, use_capsule=False,
+def fit_voxel_grid(voxel_grid, max_num_fitted_models=5, use_sphere=True, use_cuboid=True, use_capsule=True,
                    visualize_intermediate=False, loss_type=LossType.BEST_EFFORT,
                    use_cuda=False, cuda_device=None, component_threshold=0.05):
     fitted_models = []

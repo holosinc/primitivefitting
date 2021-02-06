@@ -25,7 +25,7 @@ class PrimitiveModel(nn.Module):
         super().__init__()
         self.lambda_ = lambda_
 
-    def compute_loss(self, points, containment_type=ContainmentType.DEFAULT, loss_type=LossType.BEST_EFFORT):
+    def compute_loss(self, points, containment_type=ContainmentType.DEFAULT, loss_type=LossType.BEST_MATCH):
         # Assume that the voxels have a volume of 1
         if containment_type == ContainmentType.DEFAULT:
             num_contained_voxels = self.count_containment(points)
@@ -80,13 +80,13 @@ class PrimitiveModel(nn.Module):
     def normalize(self):
         pass
 
-    def forward(self, points, loss_type=LossType.BEST_EFFORT):
+    def forward(self, points, loss_type=LossType.BEST_MATCH):
         return self.compute_loss(points, containment_type=ContainmentType.DEFAULT, loss_type=loss_type)
 
-    def exact_forward(self, points, loss_type=LossType.BEST_EFFORT):
+    def exact_forward(self, points, loss_type=LossType.BEST_MATCH):
         return float(self.compute_loss(points, containment_type=ContainmentType.EXACT, loss_type=loss_type))
 
-    def fuzzy_forward(self, points, loss_type=LossType.BEST_EFFORT):
+    def fuzzy_forward(self, points, loss_type=LossType.BEST_MATCH):
         return float(self.compute_loss(points, containment_type=ContainmentType.FUZZY, loss_type=loss_type))
 
     def translate(self, offset):
@@ -112,9 +112,16 @@ class CapsuleModel(PrimitiveModel):
         self.p2 = nn.Parameter(torch.randn(3))
         self.radius_param = nn.Parameter(torch.randn(1))
 
-        kmeans = KMeans(n_clusters=2).fit(init_points.cpu().numpy())
-        cluster_a = torch.tensor(kmeans.cluster_centers_[0], device=torchext.get_device(init_points))
-        cluster_b = torch.tensor(kmeans.cluster_centers_[1], device=torchext.get_device(init_points))
+        if init_points.shape[0] >= 2:
+            kmeans = KMeans(n_clusters=2).fit(init_points.cpu().numpy())
+            cluster_a = torch.tensor(kmeans.cluster_centers_[0], device=torchext.get_device(init_points))
+            cluster_b = torch.tensor(kmeans.cluster_centers_[1], device=torchext.get_device(init_points))
+        elif init_points.shape[0] == 1:
+            offset = torch.tensor([0.1, 0.0, 0.0], device=torchext.get_device(init_points))
+            cluster_a = init_points[0] - offset
+            cluster_b = init_points[0] + offset
+        else:
+            raise ValueError("Cannot initialize capsule with 0 points")
 
         n_hat = torchext.normalize(cluster_b - cluster_a)
         v = init_points - cluster_a.unsqueeze(0)
@@ -368,8 +375,6 @@ class CuboidModel(PrimitiveModel):
         self.optimizer_config = [OptimizerPreference(15.0, 10.0, [self.min_corner_param, self.max_corner_param, self.position]),
                                  OptimizerPreference(0.05, 0.01, [self.rotation])]
 
-        # TODO: Ranges
-
     def containment(self, points):
         min_corner = self.min_corner()
         max_corner = self.max_corner()
@@ -496,8 +501,6 @@ class AxisAlignedCuboid(PrimitiveModel):
         super().__init__(lambda_)
         self.min_corner = nn.Parameter(torch.randn(3))
         self.max_corner = nn.Parameter(torch.randn(3))
-        # self.rotation takes local space points into world space
-        #self.rotation = nn.Parameter(torch.randn((4,)))
 
         inside_point_center = torch.mean(init_points, dim=0)
         max_distance_from_center = torch.max(torch.abs(init_points - (inside_point_center.unsqueeze(0))), dim=0).values
@@ -529,7 +532,6 @@ class AxisAlignedCuboid(PrimitiveModel):
         face4 = differentiable_geq_c(points[:, 1], min_corner[1], lambda_=self.lambda_)
         face5 = differentiable_leq_c(points[:, 2], max_corner[2], lambda_=self.lambda_)
         face6 = differentiable_geq_c(points[:, 2], min_corner[2], lambda_=self.lambda_)
-        #return (face1 * face2 * face3 * face4 * face5 * face6 + 0.00001).pow(1.0 / 6.0)
         return face1 * face2 * face3 * face4 * face5 * face6
 
     def exact_containment(self, points):

@@ -127,9 +127,9 @@ def fill_holes(voxel_grid):
         voxels_to_visit = voxels_to_visit[~(voxel_grid[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]])]
         # Only consider unique voxels
         voxels_to_visit = torch.unique(voxels_to_visit, dim=0)
-        # Mark these voxels in the return grid as empty
-        ret[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]] = False
         if voxels_to_visit.shape[0] > 0:
+            # Mark these voxels in the return grid as empty
+            ret[voxels_to_visit[:, 0], voxels_to_visit[:, 1], voxels_to_visit[:, 2]] = False
             voxels_to_visit = batch_neighbors(voxels_to_visit)
 
     return ret
